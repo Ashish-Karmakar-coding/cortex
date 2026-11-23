@@ -39,18 +39,22 @@ jobs:
       - name: Create archives
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          cp dist/cortex.js "$GITHUB_WORKSPACE/cortex.js"
+          cp dist/cortex.js "$GITHUB_WORKSPACE/cortex-${VERSION}.js"
           cd release/cortex
           tar -czf "$GITHUB_WORKSPACE/cortex.tar.gz" .
           zip -qr "$GITHUB_WORKSPACE/cortex.zip" .
           cp "$GITHUB_WORKSPACE/cortex.tar.gz" "$GITHUB_WORKSPACE/cortex-${VERSION}.tar.gz"
           cp "$GITHUB_WORKSPACE/cortex.zip" "$GITHUB_WORKSPACE/cortex-${VERSION}.zip"
           cd "$GITHUB_WORKSPACE"
-          sha256sum cortex.tar.gz cortex.zip > SHA256SUMS
+          sha256sum cortex.js cortex.tar.gz cortex.zip > SHA256SUMS
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            cortex.js
+            cortex-*.js
             cortex.tar.gz
             cortex.zip
             cortex-*.tar.gz

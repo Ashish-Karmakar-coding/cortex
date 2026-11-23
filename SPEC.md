@@ -12,7 +12,12 @@ An open-source, production-grade agentic coding CLI tool (similar to Claude Code
    - Support both **Interactive TUI Mode** (`cortex`) and **Non-Interactive Unix Pipe / Headless Mode** (`git diff | cortex -p "review this"` or `cortex -p "fix failing tests" --yes`).
 3. **Human-in-the-Loop Safety:**
    - Auto-approve read-only tools (`read_file`, `glob_files`, `grep_search`, `git_status`).
-   - Pause and render a colour-coded unified diff or command preview before executing mutating tools (`write_file`, `edit_file`, `bash_exec`), offering `[y] Allow once / [a] Allow for session / [n] Reject with feedback`.
+   - Pause and render a colour-coded unified diff or command preview before executing mutating tools (`write_file`, `edit_file`, `bash_exec`) **and subagent delegation (`task`)**, offering `[y] Allow once / [a] Allow for session / [n] Reject with feedback`.
+
+ 4. **Subagents & Project Memory:**
+    - Built-in agents (`general-purpose`, `explore`, `plan`, `review`) with isolated message histories and tool allowlists, delegated via the `task` tool; custom Markdown agents in `.cortex/agents/` or `~/.cortex/agents/`.
+    - `/init` generates `CORTEX.md`; the system prompt loads it on every turn.
+ 5. **Smooth, Solid Theme:** `#2C3930` background / `#DCD7C9` foreground with OSC 10/11/12 terminal theming; `/` command palette, buffered streaming, memoized messages, and `<Static>` completed output so typing never stutters.
 
 ### Tech Stack
 - **Runtime & Language:** Node.js 22+, TypeScript (strict mode, ESM)
@@ -39,8 +44,11 @@ Cortex/
     │   └── factory.ts        # Returns unified AI SDK LanguageModel + Ollama num_ctx options
     ├── agent/
     │   ├── loop.ts           # Core ReAct loop, streaming handler, AbortController
-    │   ├── prompts.ts        # Dynamic system prompt (OS, cwd, git branch, repo map)
+    │   ├── prompts.ts        # Dynamic system prompt (OS, cwd, git branch, repo map, CORTEX.md)
+    │   ├── init.ts           # /init generator for CORTEX.md
+    │   ├── subagents.ts      # Agent registry, custom agent loader, isolated subagent loop
     │   ├── fallbackParser.ts # XML/JSON tool-call parser for smaller local LLMs
+    │   ├── task.ts          # `task` tool: delegation to subagents
     │   └── compaction.ts     # Token estimator & conversation summariser at 75% context
     ├── tools/
     │   ├── registry.ts       # Zod-validated tool definitions & permission metadata
@@ -52,16 +60,22 @@ Cortex/
     ├── persistence/
     │   └── sessions.ts       # SQLite store for saving and resuming sessions (--resume)
     └── tui/
-        ├── App.tsx           # Root Ink component, keyboard shortcuts (Ctrl+C abort)
-        ├── MessageList.tsx   # Markdown + syntax-highlighted streaming message renderer
-        ├── ApprovalPrompt.tsx# Interactive diff viewer & tool permission selector
-        └── ModelSelector.tsx # Interactive provider/model & API key setup modal
+        ├── App.tsx            # Root Ink component, commands, shortcuts, streaming state
+        ├── PromptInput.tsx    # Self-contained input state, `/` palette, history
+        ├── MessageList.tsx    # Memoized, `<Static>`-aware message renderer
+        ├── ApprovalPrompt.tsx # Interactive diff/command/task approval
+        ├── SubagentPanel.tsx  # Live subagent status
+        ├── SessionSelector.tsx# Resume-session picker
+        ├── commands.ts        # Slash command registry
+        ├── palette.ts         # Theme colors + OSC terminal theming
+        ├── theme.tsx          # Themed selectors and palette re-exports
+        └── ModelSelector.tsx  # Interactive provider/model & API key setup modal
 ```
 
 ### Distribution & Installation
 - **Single-file bundle:** `scripts/build.mjs` uses esbuild to bundle `src/` (including Ink, React, and the AI SDK) into `dist/cortex.js`, so users do not need to install runtime dependencies.
 - **Curl installers:** `install.sh` (macOS/Linux) and `install.ps1` (Windows) download the latest GitHub Release archive, install into `~/.cortex` (`$CORTEX_HOME`), and put a `cortex` launcher on `PATH`.
-- **Release automation:** `.github/workflows/release.yml` builds and publishes `cortex.tar.gz` and `cortex.zip` assets on every `v*` tag; the installers resolve `releases/latest/download/...`.
-- **Self-update:** `cortex upgrade` re-runs the platform installer.
+- **Release automation:** `.github/workflows/release.yml` builds and publishes `cortex.js`, `cortex.tar.gz` and `cortex.zip` assets on every `v*` tag; the installers resolve `releases/latest/download/...`.
+- **Self-update:** `cortex upgrade` downloads the latest `cortex.js` release asset and atomically replaces the installed bundle, preserving config and sessions.
 - **Minimal runtime requirement:** Node.js 22.13+ (for the unflagged `node:sqlite` module). No npm global install is required.
 

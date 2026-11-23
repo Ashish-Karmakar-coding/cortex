@@ -30,11 +30,16 @@ export const ansi = {
 
 let restoreTheme: (() => void) | null = null;
 
+/** OSC color values use XParseColor syntax, e.g. rgb:2c/39/30. */
+function toOscRgb(hex: string): string {
+  return `rgb:${hex.slice(1, 3)}/${hex.slice(3, 5)}/${hex.slice(5, 7)}`;
+}
+
 /**
  * Ask the terminal emulator to use the Cortex background/foreground colors.
- * OSC 10/11 are supported by Windows Terminal, iTerm2, GNOME Terminal, VS Code,
- * and most modern emulators; terminals that ignore them still get the explicit
- * per-element colors from Ink.
+ * OSC 10/11/12 are supported by Windows Terminal, iTerm2, GNOME Terminal,
+ * VS Code, and most modern emulators; terminals that ignore them still get
+ * the explicit per-element colors from Ink.
  */
 export function applyTerminalTheme(): void {
   if (restoreTheme || !process.stdout.isTTY) {
@@ -42,13 +47,17 @@ export function applyTerminalTheme(): void {
   }
 
   const out = process.stdout;
-  out.write(`\x1b]10;${palette.fg}\x07\x1b]11;${palette.bg}\x07`);
+  out.write(
+    `\x1b]10;${toOscRgb(palette.fg)}\x07` +
+      `\x1b]11;${toOscRgb(palette.bg)}\x07` +
+      `\x1b]12;${toOscRgb(palette.fg)}\x07`
+  );
 
   const restore = () => {
     if (!restoreTheme) return;
     restoreTheme = null;
     try {
-      out.write('\x1b]110\x07\x1b]111\x07');
+      out.write('\x1b]110\x07\x1b]111\x07\x1b]112\x07');
     } catch {
       // Stdout may already be closed during shutdown.
     }

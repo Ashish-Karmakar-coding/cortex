@@ -62,6 +62,14 @@ export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({
     onDecision('reject', value.trim() || undefined);
   };
 
+  // Drop createPatch's redundant Index/==== header lines and keep the preview
+  // short enough to fit most terminals.
+  const MAX_DIFF_LINES = 22;
+  const diffLines = diff ? diff.split('\n') : [];
+  const visibleDiff = diffLines[0]?.startsWith('Index:')
+    ? diffLines.slice(2)
+    : diffLines;
+
   return (
     <Box
       flexDirection="column"
@@ -90,6 +98,28 @@ export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({
         </Box>
       )}
 
+      {/* Subagent delegation */}
+      {toolName === 'task' && (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text dimColor>
+            Subagent:{' '}
+            <Text color={palette.fg}>{String(args['agent_type'] ?? 'general-purpose')}</Text>
+          </Text>
+          <Text dimColor>
+            Task: <Text color={palette.fg}>{String(args['description'] ?? '')}</Text>
+          </Text>
+          <Box
+            flexDirection="column"
+            borderStyle="single"
+            borderColor={palette.border}
+            paddingX={1}
+            marginTop={1}
+          >
+            <Text color={palette.muted}>{String(args['prompt'] ?? '')}</Text>
+          </Box>
+        </Box>
+      )}
+
       {/* File Write/Edit path */}
       {(toolName === 'write_file' || toolName === 'edit_file') && (
         <Box flexDirection="column" marginBottom={1}>
@@ -109,9 +139,8 @@ export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({
             borderColor={palette.border}
             paddingX={1}
           >
-            {diff
-              .split('\n')
-              .slice(0, 35)
+            {visibleDiff
+              .slice(0, MAX_DIFF_LINES)
               .map((line, idx) => {
                 if (line.startsWith('+') && !line.startsWith('+++')) {
                   return (
@@ -140,9 +169,9 @@ export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({
                   </Text>
                 );
               })}
-            {diff.split('\n').length > 35 && (
+            {visibleDiff.length > MAX_DIFF_LINES && (
               <Text dimColor>
-                ... [{diff.split('\n').length - 35} more lines omitted]
+                ... [{visibleDiff.length - MAX_DIFF_LINES} more lines omitted]
               </Text>
             )}
           </Box>
@@ -150,7 +179,7 @@ export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({
       )}
 
       {/* Other tool arguments */}
-      {toolName !== 'bash_exec' && !diff && (
+      {toolName !== 'bash_exec' && toolName !== 'task' && !diff && (
         <Box flexDirection="column" marginBottom={1}>
           <Text dimColor>Arguments:</Text>
           <Text color={palette.muted}>{JSON.stringify(args, null, 2)}</Text>

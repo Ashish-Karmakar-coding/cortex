@@ -1,21 +1,29 @@
 import { Command } from 'commander';
-import { loadConfig, saveConfig, setApiKey } from './config/store.js';
+import { loadConfig, saveConfig, setApiKey, getConfigDir } from './config/store.js';
 import { type Provider, getModelInfo, listAvailableModels } from './config/models.js';
 import { createModel, createModelFromConfig } from './providers/factory.js';
 import { runAgentLoop, type AgentState, type ApprovalCallback } from './agent/loop.js';
 import { SessionStore } from './persistence/sessions.js';
 import type { CoreMessage } from 'ai';
 import { createInterface } from 'node:readline';
-import { spawnSync } from 'node:child_process';
+import { writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import chalk from 'chalk';
-import { VERSION, REPO } from './version.js';
+import { VERSION } from './version.js';
+import { upgrade } from './upgrade.js';
 import { palette, applyTerminalTheme } from './tui/palette.js';
+import { findSlashCommand, formatCommandHelp } from './tui/commands.js';
+import { initProjectFile } from './agent/init.js';
+import { loadSubagents } from './agent/subagents.js';
 
 const fg = chalk.hex(palette.fg);
 const muted = chalk.hex(palette.muted);
 const success = chalk.hex(palette.success);
 const warning = chalk.hex(palette.warning);
 const danger = chalk.hex(palette.danger);
+
+/** Tools that require approval unless auto-approve is enabled. */
+const CONFIRM_TOOL_NAMES = ['write_file', 'edit_file', 'bash_exec', 'task'];
 
 const program = new Command();
 
@@ -55,41 +63,6 @@ const opts = program.opts<{
   plain?: boolean;
   numCtx: string;
 }>();
-
-function upgrade(): void {
-  console.log(`Updating Cortex (${REPO}) to the latest release...`);
-  const installerUrl = `https://raw.githubusercontent.com/${REPO}/main`;
-
-  const result =
-    process.platform === 'win32'
-      ? spawnSync(
-          'powershell.exe',
-          [
-            '-NoProfile',
-            '-ExecutionPolicy',
-            'Bypass',
-            '-Command',
-            `irm ${installerUrl}/install.ps1 | iex`,
-          ],
-          { stdio: 'inherit' }
-        )
-      : spawnSync(
-          'bash',
-          ['-c', `curl -fsSL ${installerUrl}/install.sh | bash`],
-          { stdio: 'inherit' }
-        );
-
-  if (result.error) {
-    console.error(`\nUpdate failed: ${result.error.message}`);
-    console.error(`Re-run the installer manually:\n  ${installerUrl}/install.sh`);
-    process.exit(1);
-  }
-  if (result.status !== 0) {
-    console.error('\nUpdate failed. Re-run the installer manually.');
-    process.exit(result.status ?? 1);
-  }
-  console.log('\nCortex is up to date. Restart the CLI to use the new version.');
-}
 
 
 async function main() {
@@ -184,6 +157,15 @@ async function main() {
         onToolStart: (name) => console.error(`\n[Running: ${name}]`),
         onToolEnd: (name, result) =>
           console.error(`[Done: ${name}] ${result.slice(0, 100)}`),
+        onSubagentEvent: (event) => {
+          if (event.type === 'start') {
+            console.error(`[Subagent ${event.name}: ${event.description}]`);
+          } else if (event.type === 'tool') {
+            console.error(`  [${event.name}] ${event.tool} ${event.detail}`);
+          } else if (event.type === 'error') {
+            console.error(`[Subagent ${event.name} error: ${event.error}]`);
+          }
+        },
       });
 
       // Save session
@@ -232,7 +214,7 @@ async function main() {
       `  ${muted('Provider:')} ${fg(config.activeProvider)} ${muted('|')} ${muted('Model:')} ${fg(config.activeModel)}`
     );
     console.log(muted('  Type your request, or use slash commands:'));
-    console.log(muted('  /model /provider /key /compact /sessions /clear /help\n'));
+    console.log(muted('  / commands — type /help for the full list\n'));
 
     const rl = createInterface({
       input: process.stdin,
@@ -263,19 +245,35 @@ async function main() {
 
     const handleSlashCommand = async (input: string): Promise<boolean> => {
       const parts = input.trim().split(/\s+/);
-      const cmd = parts[0]!.toLowerCase();
+      const found = findSlashCommand(input);
+      const cmd = found ? `/${found.name}` : parts[0]!.toLowerCase();
 
       switch (cmd) {
         case '/help':
           console.log(`\n${fg.bold('Slash Commands:')}`);
-          console.log(muted('  /provider          — Switch LLM provider'));
-          console.log(muted('  /model             — Select model'));
-          console.log(muted('  /key <prov> <key>  — Save API key'));
-          console.log(muted('  /compact           — Compact conversation context'));
-          console.log(muted('  /sessions          — List/load previous sessions'));
-          console.log(muted('  /clear             — Reset conversation'));
-          console.log(muted('  /help              — Show this help\n'));
+          console.log(muted(formatCommandHelp().split('\n').map((line) => `  ${line}`).join('\n')));
+          console.log(
+            `\n${fg.bold('Shortcuts:')}\n${muted(
+              '  Ctrl+C  interrupt, or press twice to exit\n  /quit   exit Cortex'
+            )}\n`
+          );
           return true;
+
+        case '/agents': {
+          const agents = loadSubagents();
+          console.log(`\n${fg.bold('Subagents:')}`);
+          for (const agent of agents) {
+            const source = agent.source === 'builtin' ? '' : ` ${muted(`(${agent.source})`)}`;
+            console.log(`  ${fg(agent.name)}${source} — ${agent.description}`);
+            console.log(muted(`    tools: ${agent.tools.join(', ')}`));
+          }
+          console.log(
+            muted(
+              `\n  Add custom agents in .cortex/agents/<name>.md or ${join(getConfigDir(), 'agents')}.\n`
+            )
+          );
+          return true;
+        }
 
         case '/provider': {
           const providers = ['ollama', 'lmstudio', 'openai', 'anthropic', 'google', 'groq', 'openrouter'];
@@ -353,17 +351,162 @@ async function main() {
             console.log(`\n${fg.bold('Recent sessions:')}`);
             sessions.forEach((s, i) => {
               console.log(`  ${i + 1}. ${muted(`[${s.model}]`)} ${fg(s.title)} ${muted(`(${s.updatedAt})`)}`);
-              console.log(muted(`     ID: ${s.id}`));
+              console.log(muted(`     /resume ${s.id}`));
             });
-            console.log(muted('\n  Use --resume <session-id> to load a session.\n'));
+            console.log(muted('\n  Use /resume <session-id> to load a session.\n'));
           }
           return true;
         }
 
+        case '/resume': {
+          const target = parts[1];
+          if (!target) {
+            console.log(`${warning('Usage: /resume <session-id>')}\n`);
+            return true;
+          }
+          const session = sessionStore.load(target);
+          if (!session) {
+            console.log(`${danger(`Session not found: ${target}`)}\n`);
+            return true;
+          }
+          try {
+            state.messages = JSON.parse(session.messages) as CoreMessage[];
+            sessionId = session.id;
+            console.log(
+              `${success(`Resumed "${session.title}" (${state.messages.length} messages)`)}\n`
+            );
+          } catch {
+            console.log(`${danger('That session could not be parsed.')}\n`);
+          }
+          return true;
+        }
+
+        case '/new':
         case '/clear':
           state.messages = [];
-          console.log(`${success('Conversation cleared.')}\n`);
+          sessionId = sessionStore.generateId();
+          console.log(`${success('Started a new conversation.')}\n`);
           return true;
+
+        case '/init': {
+          try {
+            const result = initProjectFile();
+            console.log(
+              result.created
+                ? `${success(`Created ${result.path}`)}\n`
+                : `${warning(`${result.path} already exists — edit it to describe this project.`)}\n`
+            );
+          } catch (err) {
+            console.log(`${danger(`Could not create CORTEX.md: ${String(err)}`)}\n`);
+          }
+          return true;
+        }
+
+        case '/status':
+          console.log(`\n${fg.bold(`Cortex ${VERSION}`)}`);
+          console.log(`  ${muted('Provider:')} ${fg(config.activeProvider)}`);
+          console.log(`  ${muted('Model:')} ${fg(config.activeModel)}`);
+          console.log(`  ${muted('Context:')} ${fg(state.modelInfo.contextWindow.toLocaleString())} tokens`);
+          console.log(`  ${muted('Messages:')} ${fg(String(state.messages.length))}`);
+          console.log(`  ${muted('Session:')} ${fg(sessionId)}`);
+          console.log(
+            `  ${muted('Auto-approve:')} ${fg(
+              CONFIRM_TOOL_NAMES.every((tool) => state.sessionApprovals.has(tool)) ? 'on' : 'off'
+            )}`
+          );
+          console.log(`  ${muted('Config:')} ${fg(getConfigDir())}`);
+          console.log(`  ${muted('cwd:')} ${fg(process.cwd())}\n`);
+          return true;
+
+        case '/doctor': {
+          const checks: string[] = [];
+          const [major, minor] = process.versions.node.split('.').map(Number);
+          const nodeOk = (major ?? 0) > 22 || ((major ?? 0) === 22 && (minor ?? 0) >= 13);
+          checks.push(`${nodeOk ? '✓' : '✗'} Node.js ${process.versions.node} (need >= 22.13)`);
+          checks.push(`${existsSync(getConfigDir()) ? '✓' : '✗'} Config directory ${getConfigDir()}`);
+          try {
+            sessionStore.list();
+            checks.push('✓ Session database readable');
+          } catch (err) {
+            checks.push(`✗ Session database: ${String(err)}`);
+          }
+          const prov = config.activeProvider as Provider;
+          if (prov === 'ollama' || prov === 'lmstudio') {
+            const baseUrl =
+              config.providers[prov]?.baseUrl ??
+              (prov === 'ollama' ? 'http://localhost:11434' : 'http://localhost:1234/v1');
+            const url = prov === 'ollama' ? `${baseUrl}/api/tags` : `${baseUrl}/models`;
+            try {
+              const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
+              checks.push(`${response.ok ? '✓' : '✗'} ${prov} at ${baseUrl}`);
+            } catch {
+              checks.push(`✗ ${prov} not reachable at ${baseUrl}`);
+            }
+          } else {
+            const key =
+              config.providers[prov]?.apiKey ?? process.env[`${prov.toUpperCase()}_API_KEY`];
+            checks.push(`${key ? '✓' : '✗'} ${prov} API key ${key ? 'configured' : 'missing'}`);
+          }
+          console.log(`\n${fg.bold('Diagnostics:')}`);
+          console.log(muted(checks.map((line) => `  ${line}`).join('\n')));
+          console.log('');
+          return true;
+        }
+
+        case '/export': {
+          const lines: string[] = [
+            '# Cortex conversation',
+            '',
+            `- Exported: ${new Date().toISOString()}`,
+            `- Provider: ${config.activeProvider}`,
+            `- Model: ${config.activeModel}`,
+            `- Session: ${sessionId}`,
+            '',
+          ];
+          for (const message of state.messages) {
+            if (message.role !== 'user' && message.role !== 'assistant') continue;
+            const text =
+              typeof message.content === 'string'
+                ? message.content
+                : Array.isArray(message.content)
+                  ? message.content
+                      .filter((part) => part.type === 'text')
+                      .map((part) => (part as { text: string }).text)
+                      .join('\n')
+                  : '';
+            if (!text.trim()) continue;
+            lines.push(message.role === 'user' ? '## You' : '## Cortex', '', text, '');
+          }
+          const filePath = join(
+            process.cwd(),
+            `cortex-export-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15)}.md`
+          );
+          try {
+            writeFileSync(filePath, lines.join('\n'), 'utf-8');
+            console.log(`${success(`Exported to ${filePath}`)}\n`);
+          } catch (err) {
+            console.log(`${danger(`Export failed: ${String(err)}`)}\n`);
+          }
+          return true;
+        }
+
+        case '/auto': {
+          const enabled = CONFIRM_TOOL_NAMES.every((tool) => state.sessionApprovals.has(tool));
+          for (const tool of CONFIRM_TOOL_NAMES) {
+            if (enabled) state.sessionApprovals.delete(tool);
+            else state.sessionApprovals.add(tool);
+          }
+          console.log(
+            `${success(`Auto-approve ${enabled ? 'disabled' : 'enabled'}.`)}\n`
+          );
+          return true;
+        }
+
+        case '/quit':
+        case '/exit':
+          sessionStore.close();
+          console.log('\nGoodbye!');
+          process.exit(0);
 
         default:
           return false;
@@ -439,6 +582,15 @@ async function main() {
           onApproval: approvalCallback,
           onToolStart: (name) => console.log(`\n${muted(`[Running: ${name}]`)}`),
           onToolEnd: (name) => console.log(muted(`[Done: ${name}]`)),
+          onSubagentEvent: (event) => {
+            if (event.type === 'start') {
+              console.log(muted(`\n[Subagent ${event.name}: ${event.description}]`));
+            } else if (event.type === 'tool') {
+              console.log(muted(`  [${event.name}] ${event.tool} ${event.detail}`));
+            } else if (event.type === 'error') {
+              console.log(danger(`[Subagent ${event.name} error: ${event.error}]`));
+            }
+          },
         });
 
         // Auto-save session
@@ -468,8 +620,8 @@ async function main() {
 }
 
 if (upgradeRequested) {
-  upgrade();
-  process.exit(0);
+  const ok = await upgrade();
+  process.exit(ok ? 0 : 1);
 }
 
 await main().catch((err) => {

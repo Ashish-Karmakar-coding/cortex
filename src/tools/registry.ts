@@ -15,6 +15,7 @@ export const TOOL_PERMISSIONS: Record<string, ToolPermission> = {
   git_status: 'auto',
   git_diff: 'auto',
   git_log: 'auto',
+  task: 'confirm',
   write_file: 'confirm',
   edit_file: 'confirm',
   bash_exec: 'confirm',

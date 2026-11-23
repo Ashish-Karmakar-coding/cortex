@@ -8,6 +8,9 @@ import { buildSystemPrompt } from '../src/agent/prompts.js';
 import { estimateTokens, shouldCompact } from '../src/agent/compaction.js';
 import { loadConfig, saveConfig, setApiKey } from '../src/config/store.js';
 import { CURATED_MODELS, getModelInfo } from '../src/config/models.js';
+import { loadSubagents } from '../src/agent/subagents.js';
+import { createTaskTool } from '../src/tools/task.js';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -38,7 +41,7 @@ async function runAllTests() {
   // ==========================================
   // 1. Config Store & Models
   // ==========================================
-  console.log('\x1b[36m[1/6] Config & Model Registry\x1b[0m');
+  console.log('\x1b[36m[1/7] Config & Model Registry\x1b[0m');
   try {
     const config = loadConfig();
     assert(typeof config.activeProvider === 'string', 'loadConfig loads activeProvider');
@@ -58,7 +61,7 @@ async function runAllTests() {
   // ==========================================
   // 2. File System Tools & Surgical Editing
   // ==========================================
-  console.log('\n\x1b[36m[2/6] File System Tools (read, write, surgical edit)\x1b[0m');
+  console.log('\n\x1b[36m[2/7] File System Tools (read, write, surgical edit)\x1b[0m');
   try {
     const sampleFile = join(testDir, 'test-doc.txt');
 
@@ -98,7 +101,7 @@ async function runAllTests() {
   // ==========================================
   // 3. Search Tools (glob_files, grep_search)
   // ==========================================
-  console.log('\n\x1b[36m[3/6] Search Tools\x1b[0m');
+  console.log('\n\x1b[36m[3/7] Search Tools\x1b[0m');
   try {
     const globRes = await globFilesTool.execute({ pattern: 'src/**/*.ts' }, { messages: [] });
     assert(globRes.includes('src/index.ts') && globRes.includes('src/agent/loop.ts'), 'glob_files discovers typescript files');
@@ -112,7 +115,7 @@ async function runAllTests() {
   // ==========================================
   // 4. Shell Execution & Safety Sandbox
   // ==========================================
-  console.log('\n\x1b[36m[4/6] Shell Execution & Safety Sandbox\x1b[0m');
+  console.log('\n\x1b[36m[4/7] Shell Execution & Safety Sandbox\x1b[0m');
   try {
     const bashTool = createBashExecTool();
 
@@ -139,7 +142,7 @@ async function runAllTests() {
   // ==========================================
   // 5. Persistence (Node:SQLite Session Store)
   // ==========================================
-  console.log('\n\x1b[36m[5/6] Persistence (node:sqlite Session Store)\x1b[0m');
+  console.log('\n\x1b[36m[5/7] Persistence (node:sqlite Session Store)\x1b[0m');
   try {
     const testDbPath = join(testDir, 'test-sessions.db');
     const store = new SessionStore(testDbPath);
@@ -171,7 +174,7 @@ async function runAllTests() {
   // ==========================================
   // 6. Agent Reliability Layer (Fallback Parser, System Prompt, Compaction)
   // ==========================================
-  console.log('\n\x1b[36m[6/6] Agent Reliability Layer\x1b[0m');
+  console.log('\n\x1b[36m[6/7] Agent Reliability Layer\x1b[0m');
   try {
     // Fallback Parser
     const xmlInput = `
@@ -203,6 +206,73 @@ And then execute tests:
     assert(false, 'Agent reliability layer failed', String(err));
   }
 
+  // ==========================================
+  // 7. Subagents (registry, custom agents, task tool)
+  // ==========================================
+  console.log('\n\x1b[36m[7/7] Subagents\x1b[0m');
+  try {
+    const builtins = loadSubagents(join(testDir, 'empty-subagent-project'));
+    assert(
+      ['explore', 'general-purpose', 'plan', 'review'].every((name) =>
+        builtins.some((agent) => agent.name === name)
+      ),
+      'loadSubagents provides all four built-in agents'
+    );
+    assert(
+      builtins.find((agent) => agent.name === 'explore')?.tools.every(
+        (tool) => !['write_file', 'edit_file', 'bash_exec'].includes(tool)
+      ),
+      'explore subagent is read-only'
+    );
+    assert(getPermission('task') === 'confirm', 'task delegation requires approval');
+
+    const agentProject = join(testDir, 'agent-project');
+    mkdirSync(join(agentProject, '.cortex', 'agents'), { recursive: true });
+    writeFileSync(
+      join(agentProject, '.cortex', 'agents', 'docs.md'),
+      [
+        '---',
+        'name: docs',
+        'description: Documentation specialist',
+        'tools: read_file, glob_files',
+        '---',
+        'You are a documentation subagent. Find and summarize docs.',
+      ].join('\n'),
+      'utf-8'
+    );
+    const custom = loadSubagents(agentProject);
+    const docs = custom.find((agent) => agent.name === 'docs');
+    assert(docs?.description === 'Documentation specialist', 'custom subagent frontmatter is parsed');
+    assert(
+      docs?.tools.join(',') === 'read_file,glob_files',
+      'custom subagent tool allowlist is parsed'
+    );
+    assert(
+      docs?.systemPrompt.includes('documentation subagent'),
+      'custom subagent instructions are loaded'
+    );
+
+    const taskTool = createTaskTool({
+      agents: custom,
+      run: async () => 'Subagent finished: found the docs.',
+    });
+    assert(
+      taskTool.description.includes('docs: Documentation specialist'),
+      'task tool advertises available subagents to the model'
+    );
+    const taskResult = await taskTool.execute(
+      { description: 'Summarize docs', prompt: 'Read the docs', agent_type: 'docs' },
+      { messages: [] }
+    );
+    assert(
+      String(taskResult).includes('Subagent "docs"') &&
+        String(taskResult).includes('found the docs'),
+      'task tool resolves with the subagent report'
+    );
+  } catch (err) {
+    assert(false, 'Subagent tests failed', String(err));
+  }
+
   // Clean up test dir
   try {
     if (existsSync(testDir)) {
@@ -225,3 +295,4 @@ runAllTests().catch((err) => {
   console.error('Test runner fatal error:', err);
   process.exit(1);
 });
+

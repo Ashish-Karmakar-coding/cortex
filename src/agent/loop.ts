@@ -1,15 +1,17 @@
 import { streamText, type CoreMessage, type LanguageModel, type ToolResultPart } from 'ai';
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 import { createPatch } from 'diff';
 import type { Config } from '../config/store.js';
 import type { ModelInfo } from '../config/models.js';
 import { buildSystemPrompt, XML_TOOL_INSTRUCTIONS } from './prompts.js';
 import { parseToolCalls, extractTextBeforeToolCalls, hasToolCalls } from './fallbackParser.js';
 import { shouldCompact, compactMessages } from './compaction.js';
+import { loadSubagents, runSubagent, type SubagentEvent } from './subagents.js';
 import { readFileTool, writeFileTool, editFileTool } from '../tools/fs.js';
 import { globFilesTool, grepSearchTool } from '../tools/search.js';
 import { createBashExecTool } from '../tools/shell.js';
+import { createTaskTool } from '../tools/task.js';
 import { getPermission } from '../tools/registry.js';
 
 export interface AgentState {
@@ -46,10 +48,12 @@ function computePreviewDiff(toolName: string, args: Record<string, unknown>): st
         const resolved = resolve(path);
         if (existsSync(resolved)) {
           const original = readFileSync(resolved, 'utf-8');
+          if (original.length > 400_000) return undefined;
           const modified = original.includes(search_block)
             ? original.replace(search_block, replace_block)
             : original;
-          return createPatch(resolved, original, modified, 'original', 'modified');
+          const displayPath = relative(process.cwd(), resolved) || resolved;
+          return createPatch(displayPath, original, modified, 'original', 'modified');
         }
       }
     } else if (toolName === 'write_file') {
@@ -57,8 +61,10 @@ function computePreviewDiff(toolName: string, args: Record<string, unknown>): st
       if (path && content !== undefined) {
         const resolved = resolve(path);
         const original = existsSync(resolved) ? readFileSync(resolved, 'utf-8') : '';
+        if (original.length > 400_000 || content.length > 400_000) return undefined;
+        const displayPath = relative(process.cwd(), resolved) || resolved;
         return createPatch(
-          resolved,
+          displayPath,
           original,
           content,
           original ? 'original' : '/dev/null',
@@ -79,9 +85,10 @@ export interface AgentLoopOptions {
   onApproval: ApprovalCallback;
   onToolStart?: (name: string, args: Record<string, unknown>) => void;
   onToolEnd?: (name: string, result: string) => void;
+  onSubagentEvent?: (event: SubagentEvent) => void;
 }
 
-function buildToolSet(abortSignal: AbortSignal) {
+function buildToolSet(abortSignal: AbortSignal, taskTool: ReturnType<typeof createTaskTool>) {
   return {
     read_file: readFileTool,
     write_file: writeFileTool,
@@ -89,6 +96,7 @@ function buildToolSet(abortSignal: AbortSignal) {
     glob_files: globFilesTool,
     grep_search: grepSearchTool,
     bash_exec: createBashExecTool(abortSignal),
+    task: taskTool,
   };
 }
 
@@ -108,6 +116,31 @@ export async function runAgentLoop(
   let iterations = 0;
 
   try {
+    // Building the system prompt walks the repo and shells out to git, so do
+    // it once per user turn instead of on every tool-loop iteration.
+    const baseSystemPrompt = await buildSystemPrompt();
+    const systemPrompt = state.modelInfo.supportsToolCalling
+      ? baseSystemPrompt
+      : `${baseSystemPrompt}\n\n${XML_TOOL_INSTRUCTIONS}`;
+
+    // Subagents share the parent model and project context but run their own
+    // isolated message history with a filtered tool allowlist.
+    const subagents = loadSubagents();
+    const taskTool = createTaskTool({
+      agents: subagents,
+      onEvent: (event) => options.onSubagentEvent?.(event),
+      run: (definition, prompt, onEvent) =>
+        runSubagent({
+          definition,
+          prompt,
+          model: state.model,
+          modelSupportsToolCalling: state.modelInfo.supportsToolCalling,
+          abortSignal: state.abortController.signal,
+          parentSystemPrompt: systemPrompt,
+          onEvent,
+        }),
+    });
+
     while (iterations < MAX_ITERATIONS) {
       iterations++;
 
@@ -116,13 +149,7 @@ export async function runAgentLoop(
         state.messages = await compactMessages(state.messages, state.model);
       }
 
-      // Build system prompt
-      let systemPrompt = await buildSystemPrompt();
-      if (!state.modelInfo.supportsToolCalling) {
-        systemPrompt += '\n\n' + XML_TOOL_INSTRUCTIONS;
-      }
-
-      const tools = buildToolSet(state.abortController.signal);
+      const tools = buildToolSet(state.abortController.signal, taskTool);
 
       if (state.modelInfo.supportsToolCalling) {
         // === Native tool calling path ===
@@ -325,7 +352,7 @@ export async function runAgentLoop(
               } else {
                 state.messages.push({
                   role: 'user',
-                  content: `Unknown tool: "${tc.name}". Available tools: read_file, write_file, edit_file, glob_files, grep_search, bash_exec.`,
+                  content: `Unknown tool: "${tc.name}". Available tools: read_file, write_file, edit_file, glob_files, grep_search, bash_exec${taskTool ? ', task' : ''}.`,
                 });
               }
             }

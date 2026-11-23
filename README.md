@@ -75,7 +75,7 @@ CORTEX_HOME="$HOME/tools/cortex" CORTEX_VERSION=v0.1.0 \
 cortex upgrade
 ```
 
-The same installer is re-run, so the latest release replaces the current bundle. Your config, API keys, and sessions in `~/.cortex` are preserved.
+The CLI downloads the latest `cortex.js` bundle from GitHub Releases and atomically replaces `~/.cortex/bin/cortex.js`. Your config, API keys, and sessions in `~/.cortex` are preserved.
 
 ### Uninstall
 
@@ -175,9 +175,20 @@ The current provider, model, and context window are always shown in the TUI head
 cortex
 ```
 
-Keyboard shortcuts: `Ctrl+C` aborts the current operation (press twice when idle to exit).
+Keyboard shortcuts:
 
-Cortex uses a dark-green / warm-beige palette: **`#2C3930` background** with **`#DCD7C9` elements**. The TUI asks your terminal to adopt the colors (OSC 10/11) and restores your original theme on exit. To customize, edit `src/tui/palette.ts`.
+| Key | Action |
+| --- | --- |
+| `Enter` | Send the prompt or run the selected slash command |
+| `\` + `Enter` | Insert a newline |
+| `↑` / `↓` | Prompt history, or navigate the `/` palette |
+| `Tab` | Complete a slash command |
+| `Shift+Tab` | Toggle auto-approve for tool calls |
+| `Ctrl+C` | Interrupt the agent; press twice when idle to exit |
+
+Type `/` to open a filterable command palette (Claude Code style). While a response is streaming, typing keeps the prompt responsive and queues your next message.
+
+Cortex uses a dark-green / warm-beige palette: **`#2C3930` background** with **`#DCD7C9` elements**. The TUI asks your terminal to adopt the colors (OSC 10/11/12) and restores your original theme on exit. To customize, edit `src/tui/palette.ts`.
 
 ### Non-interactive / pipe mode
 
@@ -209,13 +220,52 @@ cortex -p "run the tests and fix any failures" --yes
 
 | Command | Description |
 | --- | --- |
+| `/help` | Show all commands and shortcuts |
 | `/model` | List/select a model (auto-discovers Ollama models) |
 | `/provider` | Switch provider |
 | `/key <provider> <key>` | Save an API key |
 | `/compact` | Summarise and shrink the conversation |
 | `/sessions` | List saved sessions |
-| `/clear` | Reset the conversation |
-| `/help` | Show help |
+| `/resume [id]` | Resume a session (picker if no id) |
+| `/new`, `/clear` | Start a fresh conversation |
+| `/init` | Generate `CORTEX.md` with project commands and layout |
+| `/status` | Show model, context, session, and approval state |
+| `/doctor` | Check Node, config, session DB, and provider connectivity |
+| `/export` | Export the conversation to Markdown |
+| `/auto` | Toggle auto-approve for tool calls |
+| `/agents` | List built-in and custom subagents |
+| `/quit` | Exit Cortex |
+
+### Project instructions
+
+Run `/init` once in a repository to create `CORTEX.md`. Cortex loads it into the system prompt on every turn, so the agent knows your package manager, scripts, and layout. Edit it freely — `/init` never overwrites an existing file.
+
+### Subagents
+
+Delegate broad or independent work with the `task` tool. The subagent runs in an isolated context with its own tool allowlist and returns a short report, so search noise never bloats the main conversation. Delegation is shown as an approval prompt and a live status line in the TUI.
+
+Built-in agents:
+
+| Agent | Tools | Purpose |
+| --- | --- | --- |
+| `general-purpose` | all | Multi-step research and implementation |
+| `explore` | read-only | Find files, symbols, and answers about the codebase |
+| `plan` | read-only | Produce a step-by-step implementation plan |
+| `review` | read-only | Review the working tree for bugs and missing tests |
+
+Add your own in `.cortex/agents/<name>.md` (project) or `~/.cortex/agents/<name>.md` (user):
+
+```markdown
+---
+name: docs
+description: Documentation specialist
+tools: read_file, glob_files
+---
+
+You are a documentation subagent. Find and summarize project docs.
+```
+
+Run `/agents` to see everything Cortex has loaded.
 
 Resume work later:
 
@@ -228,10 +278,11 @@ cortex --resume <session-id>
 ## How it works
 
 - **ReAct agent loop** with up to 25 tool iterations per request, streaming output, and abort support.
-- **Tools:** `read_file` (line ranges), `write_file`, `edit_file` (surgical SEARCH/REPLACE blocks with unified diffs), `glob_files`, `grep_search` (ripgrep with JS fallback), `bash_exec` (timeouts, output truncation, dangerous-command blocking).
-- **Human-in-the-loop safety:** read-only tools run automatically; file writes, edits, and shell commands show a colour-coded diff/command preview and ask `[y] once / [a] session / [n] reject`.
+- **Tools:** `read_file` (line ranges), `write_file`, `edit_file` (surgical SEARCH/REPLACE blocks with unified diffs), `glob_files`, `grep_search` (ripgrep with JS fallback), `bash_exec` (timeouts, output truncation, dangerous-command blocking), `task` (subagent delegation).
+- **Human-in-the-loop safety:** read-only tools run automatically; file writes, edits, shell commands, and subagent delegation show a colour-coded diff/command/task preview and ask `[y] once / [a] session / [n] reject`. Shift+Tab or `/auto` toggles auto-approve.
 - **Small-model friendly:** models without native tool calling get an XML `<tool_call>` fallback parser, so local 7B models still work.
-- **Context management:** token estimation and automatic conversation compaction at ~75% of the model's context window.
+- **Context management:** token estimation and automatic conversation compaction at ~75% of the model's context window. The system prompt (git state + repo tree) is built once per turn instead of once per tool iteration, so the TUI stays responsive.
+- **Smooth TUI:** completed turns are printed once with Ink `<Static>`; streamed text is buffered to ~20 updates/second; the input owns its own state so typing never repaints the transcript. Responses typed during streaming are queued.
 - **MCP support:** connect external tool servers over stdio or Streamable HTTP.
 
 ### Configuration files
@@ -243,8 +294,11 @@ All state lives in `~/.cortex` (or `$CORTEX_HOME`):
 ├── bin/cortex.js        # installed bundle
 ├── config.json          # active provider/model, keys, endpoints
 ├── sessions.db          # SQLite session history
-└── mcp.json             # optional MCP servers
+├── mcp.json             # optional MCP servers
+└── agents/              # optional user-level subagents (*.md)
 ```
+
+Project-level subagents live in `.cortex/agents/` and project instructions in `CORTEX.md`.
 
 `mcp.json`:
 
@@ -288,6 +342,7 @@ Useful scripts:
 Pushing a tag triggers the GitHub Actions release workflow, which builds the bundle, runs tests, and publishes:
 
 ```
+cortex.js            # self-contained bundle used by `cortex upgrade`
 cortex.tar.gz        # macOS / Linux installer asset
 cortex.zip           # Windows installer asset
 cortex-<version>.*   # versioned copies
@@ -295,8 +350,8 @@ SHA256SUMS
 ```
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 ---
