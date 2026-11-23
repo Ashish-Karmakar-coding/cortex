@@ -76,7 +76,14 @@ try {
     Invoke-WebRequest -Uri $Url -OutFile $ZipPath -UseBasicParsing
 
     New-Item -ItemType Directory -Path $CortexHome -Force | Out-Null
-    Expand-Archive -Path $ZipPath -DestinationPath $CortexHome -Force
+
+    # Extract into a clean temp folder first. Expand-Archive -Force uses a
+    # .NET overload that does not exist on Windows PowerShell 5.1 when the
+    # destination already contains files (i.e. during `cortex upgrade`).
+    $ExtractDir = Join-Path $TempDir 'extract'
+    New-Item -ItemType Directory -Path $ExtractDir -Force | Out-Null
+    Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
+    Copy-Item -Path (Join-Path $ExtractDir '*') -Destination $CortexHome -Recurse -Force
 } catch {
     Write-Host 'error: Could not download or extract Cortex.' -ForegroundColor Red
     Write-Host "  $($_.Exception.Message)" -ForegroundColor DarkGray
