@@ -17,7 +17,7 @@ An open-source, production-grade agentic coding CLI tool (similar to Claude Code
 ### Tech Stack
 - **Runtime & Language:** Node.js 22+, TypeScript (strict mode, ESM)
 - **CLI Argument Parser:** `commander`
-- **Terminal UI (TUI):** `ink` (React for CLI), `ink-text-input`, `ink-select-input`, `ink-spinner`, `cli-highlight`
+- **Terminal UI (TUI):** `ink` (React for CLI), `ink-text-input`, `ink-select-input`, `ink-spinner`, `cli-highlight`; custom palette (`#2C3930` background, `#DCD7C9` elements) in `src/tui/palette.ts`
 - **LLM Abstraction Layer:** Vercel AI SDK (`ai` v4) + `ollama-ai-provider` + `@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`, `@ai-sdk/openai-compatible`
 - **Validation & Diffing:** `zod`, `diff` (for unified diff generation), `fast-glob`
 - **Persistence & Config:** Node built-in `node:sqlite` (for session history) + `~/.cortex/config.json` (with 0600 file permissions for stored API keys + environment variable overrides)

@@ -11,6 +11,7 @@ import { runAgentLoop, type AgentState, type ApprovalDecision } from '../agent/l
 import { SessionStore } from '../persistence/sessions.js';
 import { compactMessages } from '../agent/compaction.js';
 import type { CoreMessage } from 'ai';
+import { palette } from './theme.js';
 
 export interface AppProps {
   initialConfig: Config;
@@ -327,20 +328,20 @@ export const App: React.FC<AppProps> = ({
       {/* Top Header */}
       <Box
         borderStyle="round"
-        borderColor="cyan"
+        borderColor={palette.fg}
         paddingX={1}
         justifyContent="space-between"
       >
         <Box>
-          <Text bold color="cyan">
+          <Text bold color={palette.fg}>
             🤖 Cortex{' '}
           </Text>
           <Text dimColor>| </Text>
-          <Text color="yellow">Provider: </Text>
-          <Text bold>{config.activeProvider} </Text>
+          <Text dimColor>Provider: </Text>
+          <Text bold color={palette.fg}>{config.activeProvider} </Text>
           <Text dimColor>| </Text>
-          <Text color="yellow">Model: </Text>
-          <Text bold>{config.activeModel} </Text>
+          <Text dimColor>Model: </Text>
+          <Text bold color={palette.fg}>{config.activeModel} </Text>
           <Text dimColor>
             ({agentStateRef.current.modelInfo.contextWindow.toLocaleString()} ctx)
           </Text>
@@ -381,14 +382,14 @@ export const App: React.FC<AppProps> = ({
       {/* Status Bar / Notifications */}
       {statusMessage && (
         <Box marginY={0} paddingX={1}>
-          <Text color="magenta">{statusMessage}</Text>
+          <Text color={palette.fg}>{statusMessage}</Text>
         </Box>
       )}
 
       {/* User Input Prompt (hidden when modal active) */}
       {!pendingApproval && !showModelSelector && (
-        <Box borderStyle="single" borderColor="green" paddingX={1} marginTop={1}>
-          <Text bold color="green">
+        <Box borderStyle="single" borderColor={palette.fg} paddingX={1} marginTop={1}>
+          <Text bold color={palette.fg}>
             cortex&gt;{' '}
           </Text>
           <TextInput

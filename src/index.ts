@@ -7,7 +7,15 @@ import { SessionStore } from './persistence/sessions.js';
 import type { CoreMessage } from 'ai';
 import { createInterface } from 'node:readline';
 import { spawnSync } from 'node:child_process';
+import chalk from 'chalk';
 import { VERSION, REPO } from './version.js';
+import { palette, applyTerminalTheme } from './tui/palette.js';
+
+const fg = chalk.hex(palette.fg);
+const muted = chalk.hex(palette.muted);
+const success = chalk.hex(palette.success);
+const warning = chalk.hex(palette.warning);
+const danger = chalk.hex(palette.danger);
 
 const program = new Command();
 
@@ -199,6 +207,8 @@ async function main() {
     }
   } else if (!opts.plain) {
     // === Interactive Ink TUI Mode ===
+    applyTerminalTheme();
+
     const { render } = await import('ink');
     const { default: React } = await import('react');
     const { App } = await import('./tui/App.js');
@@ -213,17 +223,21 @@ async function main() {
     );
   } else {
     // === Plain Terminal Readline Fallback Mode ===
-    console.log('\x1b[36m╔══════════════════════════════════════════════╗\x1b[0m');
-    console.log('\x1b[36m║\x1b[0m  🤖 \x1b[1mCortex\x1b[0m — Agentic AI Coding Assistant   \x1b[36m║\x1b[0m');
-    console.log('\x1b[36m╚══════════════════════════════════════════════╝\x1b[0m');
-    console.log(`  Provider: \x1b[33m${config.activeProvider}\x1b[0m | Model: \x1b[33m${config.activeModel}\x1b[0m`);
-    console.log('  Type your request, or use slash commands:');
-    console.log('  /model /provider /key /compact /sessions /clear /help\n');
+    applyTerminalTheme();
+
+    console.log(fg('╔══════════════════════════════════════════════╗'));
+    console.log(`${fg('║')}  🤖 ${fg.bold('Cortex')} — Agentic AI Coding Assistant   ${fg('║')}`);
+    console.log(fg('╚══════════════════════════════════════════════╝'));
+    console.log(
+      `  ${muted('Provider:')} ${fg(config.activeProvider)} ${muted('|')} ${muted('Model:')} ${fg(config.activeModel)}`
+    );
+    console.log(muted('  Type your request, or use slash commands:'));
+    console.log(muted('  /model /provider /key /compact /sessions /clear /help\n'));
 
     const rl = createInterface({
       input: process.stdin,
       output: process.stdout,
-      prompt: '\x1b[32mcortex>\x1b[0m ',
+      prompt: `${fg('cortex>')} `,
     });
 
     let ctrlCCount = 0;
@@ -233,7 +247,7 @@ async function main() {
         // Abort current operation
         state.abortController.abort();
         state.abortController = new AbortController();
-        console.log('\n\x1b[33m[Interrupted]\x1b[0m');
+        console.log(`\n${warning('[Interrupted]')}`);
         ctrlCCount = 0;
       } else {
         ctrlCCount++;
@@ -242,7 +256,7 @@ async function main() {
           sessionStore.close();
           process.exit(0);
         }
-        console.log('\n\x1b[90m(Press Ctrl+C again to exit)\x1b[0m');
+        console.log(`\n${muted('(Press Ctrl+C again to exit)')}`);
         rl.prompt();
       }
     });
@@ -253,22 +267,22 @@ async function main() {
 
       switch (cmd) {
         case '/help':
-          console.log('\n\x1b[1mSlash Commands:\x1b[0m');
-          console.log('  /provider          — Switch LLM provider');
-          console.log('  /model             — Select model');
-          console.log('  /key <prov> <key>  — Save API key');
-          console.log('  /compact           — Compact conversation context');
-          console.log('  /sessions          — List/load previous sessions');
-          console.log('  /clear             — Reset conversation');
-          console.log('  /help              — Show this help\n');
+          console.log(`\n${fg.bold('Slash Commands:')}`);
+          console.log(muted('  /provider          — Switch LLM provider'));
+          console.log(muted('  /model             — Select model'));
+          console.log(muted('  /key <prov> <key>  — Save API key'));
+          console.log(muted('  /compact           — Compact conversation context'));
+          console.log(muted('  /sessions          — List/load previous sessions'));
+          console.log(muted('  /clear             — Reset conversation'));
+          console.log(muted('  /help              — Show this help\n'));
           return true;
 
         case '/provider': {
           const providers = ['ollama', 'lmstudio', 'openai', 'anthropic', 'google', 'groq', 'openrouter'];
-          console.log('\n\x1b[1mAvailable providers:\x1b[0m');
+          console.log(`\n${fg.bold('Available providers:')}`);
           providers.forEach((p, i) => {
-            const marker = p === config.activeProvider ? ' \x1b[32m(active)\x1b[0m' : '';
-            console.log(`  ${i + 1}. ${p}${marker}`);
+            const marker = p === config.activeProvider ? ` ${success('(active)')}` : '';
+            console.log(`  ${i + 1}. ${fg(p)}${marker}`);
           });
           const answer = parts[1];
           if (answer && providers.includes(answer)) {
@@ -278,9 +292,9 @@ async function main() {
             try {
               state.model = createModelFromConfig(config);
               saveConfig(config);
-              console.log(`\x1b[32mSwitched to ${answer}\x1b[0m\n`);
+              console.log(`${success(`Switched to ${answer}`)}\n`);
             } catch (err) {
-              console.log(`\x1b[31mError: ${err instanceof Error ? err.message : String(err)}\x1b[0m\n`);
+              console.log(`${danger(`Error: ${err instanceof Error ? err.message : String(err)}`)}\n`);
             }
           }
           return true;
@@ -288,14 +302,14 @@ async function main() {
 
         case '/model': {
           const prov = config.activeProvider as Provider;
-          console.log(`\n\x1b[1mFetching models for ${prov}...\x1b[0m`);
+          console.log(`\n${fg.bold(`Fetching models for ${prov}...`)}`);
           const models = await listAvailableModels(prov, config);
           if (models.length === 0) {
-            console.log('\x1b[33mNo models found. Is the provider running?\x1b[0m\n');
+            console.log(`${warning('No models found. Is the provider running?')}\n`);
           } else {
             models.forEach((m, i) => {
-              const marker = m.id === config.activeModel ? ' \x1b[32m(active)\x1b[0m' : '';
-              console.log(`  ${i + 1}. ${m.name} (${m.id})${marker}`);
+              const marker = m.id === config.activeModel ? ` ${success('(active)')}` : '';
+              console.log(`  ${i + 1}. ${fg(m.name)} ${muted(`(${m.id})`)}${marker}`);
             });
           }
           const modelId = parts[1];
@@ -305,9 +319,9 @@ async function main() {
             try {
               state.model = createModelFromConfig(config);
               saveConfig(config);
-              console.log(`\x1b[32mSwitched to model: ${modelId}\x1b[0m\n`);
+              console.log(`${success(`Switched to model: ${modelId}`)}\n`);
             } catch (err) {
-              console.log(`\x1b[31mError: ${err instanceof Error ? err.message : String(err)}\x1b[0m\n`);
+              console.log(`${danger(`Error: ${err instanceof Error ? err.message : String(err)}`)}\n`);
             }
           }
           return true;
@@ -317,38 +331,38 @@ async function main() {
           const prov = parts[1];
           const key = parts[2];
           if (!prov || !key) {
-            console.log('\x1b[33mUsage: /key <provider> <api_key>\x1b[0m\n');
+            console.log(`${warning('Usage: /key <provider> <api_key>')}\n`);
           } else {
             setApiKey(prov, key);
-            console.log(`\x1b[32mAPI key saved for ${prov}\x1b[0m\n`);
+            console.log(`${success(`API key saved for ${prov}`)}\n`);
           }
           return true;
         }
 
         case '/compact':
-          console.log('\x1b[33mCompacting conversation...\x1b[0m');
+          console.log(warning('Compacting conversation...'));
           state.messages = await (await import('./agent/compaction.js')).compactMessages(state.messages, state.model);
-          console.log(`\x1b[32mDone. ${state.messages.length} messages remaining.\x1b[0m\n`);
+          console.log(`${success(`Done. ${state.messages.length} messages remaining.`)}\n`);
           return true;
 
         case '/sessions': {
           const sessions = sessionStore.list();
           if (sessions.length === 0) {
-            console.log('\x1b[33mNo saved sessions.\x1b[0m\n');
+            console.log(`${warning('No saved sessions.')}\n`);
           } else {
-            console.log('\n\x1b[1mRecent sessions:\x1b[0m');
+            console.log(`\n${fg.bold('Recent sessions:')}`);
             sessions.forEach((s, i) => {
-              console.log(`  ${i + 1}. [${s.model}] ${s.title} (${s.updatedAt})`);
-              console.log(`     ID: ${s.id}`);
+              console.log(`  ${i + 1}. ${muted(`[${s.model}]`)} ${fg(s.title)} ${muted(`(${s.updatedAt})`)}`);
+              console.log(muted(`     ID: ${s.id}`));
             });
-            console.log('\n  Use --resume <session-id> to load a session.\n');
+            console.log(muted('\n  Use --resume <session-id> to load a session.\n'));
           }
           return true;
         }
 
         case '/clear':
           state.messages = [];
-          console.log('\x1b[32mConversation cleared.\x1b[0m\n');
+          console.log(`${success('Conversation cleared.')}\n`);
           return true;
 
         default:
@@ -358,30 +372,32 @@ async function main() {
 
     const approvalCallback: ApprovalCallback = async (toolName, args, diff) => {
       return new Promise((resolve) => {
-        console.log(`\n\x1b[33m┌─ Tool: ${toolName}\x1b[0m`);
+        console.log(`\n${warning(`┌─ Tool: ${toolName}`)}`);
         if (toolName === 'bash_exec') {
-          console.log(`\x1b[33m│\x1b[0m Command: \x1b[36m${(args as any).command}\x1b[0m`);
+          console.log(`${warning('│')} ${muted('Command:')} ${fg(String((args as any).command))}`);
         } else if (toolName === 'edit_file' || toolName === 'write_file') {
-          console.log(`\x1b[33m│\x1b[0m File: \x1b[36m${(args as any).path}\x1b[0m`);
+          console.log(`${warning('│')} ${muted('File:')} ${fg(String((args as any).path))}`);
           if (diff) {
-            console.log('\x1b[33m│\x1b[0m Diff:');
+            console.log(`${warning('│')} ${muted('Diff:')}`);
             for (const line of diff.split('\n').slice(0, 30)) {
               if (line.startsWith('+')) {
-                console.log(`\x1b[33m│\x1b[0m \x1b[32m${line}\x1b[0m`);
+                console.log(`${warning('│')} ${success(line)}`);
               } else if (line.startsWith('-')) {
-                console.log(`\x1b[33m│\x1b[0m \x1b[31m${line}\x1b[0m`);
+                console.log(`${warning('│')} ${danger(line)}`);
               } else {
-                console.log(`\x1b[33m│\x1b[0m ${line}`);
+                console.log(`${warning('│')} ${muted(line)}`);
               }
             }
           }
         } else {
-          console.log(`\x1b[33m│\x1b[0m Args: ${JSON.stringify(args).slice(0, 200)}`);
+          console.log(`${warning('│')} ${muted('Args:')} ${fg(JSON.stringify(args).slice(0, 200))}`);
         }
-        console.log('\x1b[33m└─\x1b[0m \x1b[1m[y]\x1b[0m Allow once  \x1b[1m[a]\x1b[0m Allow session  \x1b[1m[n]\x1b[0m Reject');
+        console.log(
+          `${warning('└─')} ${fg.bold('[y]')} Allow once  ${fg.bold('[a]')} Allow session  ${fg.bold('[n]')} Reject`
+        );
 
         const approvalRl = createInterface({ input: process.stdin, output: process.stdout });
-        approvalRl.question('  > ', (answer) => {
+        approvalRl.question(`${fg('  >')} `, (answer) => {
           approvalRl.close();
           const a = answer.trim().toLowerCase();
           if (a === 'a' || a === 'allow') {
@@ -421,8 +437,8 @@ async function main() {
         await runAgentLoop(state, input, {
           onStream: (chunk) => process.stdout.write(chunk),
           onApproval: approvalCallback,
-          onToolStart: (name) => console.log(`\n\x1b[90m[Running: ${name}]\x1b[0m`),
-          onToolEnd: (name) => console.log(`\x1b[90m[Done: ${name}]\x1b[0m`),
+          onToolStart: (name) => console.log(`\n${muted(`[Running: ${name}]`)}`),
+          onToolEnd: (name) => console.log(muted(`[Done: ${name}]`)),
         });
 
         // Auto-save session
@@ -436,7 +452,7 @@ async function main() {
           updatedAt: new Date().toISOString(),
         });
       } catch (err) {
-        console.error(`\n\x1b[31mError: ${err instanceof Error ? err.message : String(err)}\x1b[0m`);
+        console.error(`\n${danger(`Error: ${err instanceof Error ? err.message : String(err)}`)}`);
       }
 
       console.log('\n');

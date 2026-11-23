@@ -177,6 +177,8 @@ cortex
 
 Keyboard shortcuts: `Ctrl+C` aborts the current operation (press twice when idle to exit).
 
+Cortex uses a dark-green / warm-beige palette: **`#2C3930` background** with **`#DCD7C9` elements**. The TUI asks your terminal to adopt the colors (OSC 10/11) and restores your original theme on exit. To customize, edit `src/tui/palette.ts`.
+
 ### Non-interactive / pipe mode
 
 ```bash

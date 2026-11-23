@@ -2,6 +2,7 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import Spinner from 'ink-spinner';
 import { highlight } from 'cli-highlight';
+import { palette } from './theme.js';
 
 export interface DisplayMessage {
   id: string;
@@ -29,7 +30,7 @@ function renderContentWithHighlighting(content: string): React.ReactNode {
     const textBefore = content.slice(lastIndex, match.index);
     if (textBefore) {
       parts.push(
-        <Text key={`text-${blockIdx}`}>
+        <Text key={`text-${blockIdx}`} color={palette.fg}>
           {textBefore}
         </Text>
       );
@@ -49,17 +50,17 @@ function renderContentWithHighlighting(content: string): React.ReactNode {
       <Box
         key={`code-${blockIdx}`}
         borderStyle="round"
-        borderColor="gray"
+        borderColor={palette.border}
         paddingX={1}
         marginY={1}
         flexDirection="column"
       >
         {lang && (
-          <Text dimColor bold>
+          <Text dimColor bold color={palette.fg}>
             [{lang}]
           </Text>
         )}
-        <Text>{highlighted}</Text>
+        <Text color={palette.fg}>{highlighted}</Text>
       </Box>
     );
 
@@ -69,10 +70,14 @@ function renderContentWithHighlighting(content: string): React.ReactNode {
 
   const textAfter = content.slice(lastIndex);
   if (textAfter) {
-    parts.push(<Text key={`text-end`}>{textAfter}</Text>);
+    parts.push(
+      <Text key={`text-end`} color={palette.fg}>
+        {textAfter}
+      </Text>
+    );
   }
 
-  return parts.length > 0 ? parts : <Text>{content}</Text>;
+  return parts.length > 0 ? parts : <Text color={palette.fg}>{content}</Text>;
 }
 
 export const MessageList: React.FC<MessageListProps> = ({ messages, activeTool }) => {
@@ -83,12 +88,12 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, activeTool }
           return (
             <Box key={msg.id} marginY={1} flexDirection="column">
               <Box>
-                <Text bold color="green">
+                <Text bold color={palette.fg}>
                   ❯ You:{' '}
                 </Text>
               </Box>
               <Box paddingLeft={2}>
-                <Text>{msg.content}</Text>
+                <Text color={palette.fg}>{msg.content}</Text>
               </Box>
             </Box>
           );
@@ -98,11 +103,11 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, activeTool }
           return (
             <Box key={msg.id} marginY={1} flexDirection="column">
               <Box>
-                <Text bold color="cyan">
+                <Text bold color={palette.fg}>
                   ✦ Assistant:{' '}
                 </Text>
                 {msg.isStreaming && (
-                  <Text color="yellow">
+                  <Text color={palette.fg}>
                     <Spinner type="dots" />
                   </Text>
                 )}
@@ -131,9 +136,9 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, activeTool }
 
       {activeTool && (
         <Box marginY={1} paddingLeft={2}>
-          <Text color="yellow">
+          <Text color={palette.fg}>
             <Spinner type="dots" /> Running tool:{' '}
-            <Text bold color="cyan">{activeTool.name}</Text>
+            <Text bold color={palette.fg}>{activeTool.name}</Text>
             {activeTool.args ? ` (${Object.keys(activeTool.args).join(', ')})` : ''}
           </Text>
         </Box>

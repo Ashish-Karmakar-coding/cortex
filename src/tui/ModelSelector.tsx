@@ -4,6 +4,7 @@ import SelectInput from 'ink-select-input';
 import TextInput from 'ink-text-input';
 import { type Provider, listAvailableModels, type ModelInfo } from '../config/models.js';
 import type { Config } from '../config/store.js';
+import { palette, ThemedIndicator, ThemedItem } from './theme.js';
 
 export interface ModelSelectorProps {
   config: Config;
@@ -108,13 +109,13 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ config, onSelect, 
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor="cyan"
+      borderColor={palette.fg}
       paddingX={2}
       paddingY={1}
       marginY={1}
     >
       <Box marginBottom={1}>
-        <Text bold color="cyan">
+        <Text bold color={palette.fg}>
           ⚙️ Model & Provider Configuration
         </Text>
         <Text dimColor> (Press Esc to cancel)</Text>
@@ -122,21 +123,26 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ config, onSelect, 
 
       {step === 'provider' && (
         <Box flexDirection="column">
-          <Text bold color="yellow">
+          <Text bold color={palette.fg}>
             Select LLM Provider:
           </Text>
-          <SelectInput items={PROVIDERS} onSelect={handleProviderSelect} />
+          <SelectInput
+            items={PROVIDERS}
+            onSelect={handleProviderSelect}
+            indicatorComponent={ThemedIndicator}
+            itemComponent={ThemedItem}
+          />
         </Box>
       )}
 
       {step === 'key' && (
         <Box flexDirection="column">
-          <Text bold color="yellow">
+          <Text bold color={palette.fg}>
             Enter API key for {selectedProvider}:
           </Text>
           <Text dimColor>Keys are stored securely with 0600 file permissions.</Text>
           <Box marginTop={1}>
-            <Text color="cyan">&gt; </Text>
+            <Text color={palette.fg}>&gt; </Text>
             <TextInput
               value={apiKey}
               onChange={setApiKey}
@@ -150,24 +156,29 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ config, onSelect, 
 
       {step === 'model' && (
         <Box flexDirection="column">
-          <Text bold color="yellow">
+          <Text bold color={palette.fg}>
             Select Model for {selectedProvider}:
           </Text>
           {loadingModels ? (
-            <Text color="gray">Loading available models...</Text>
+            <Text color={palette.muted}>Loading available models...</Text>
           ) : (
-            <SelectInput items={modelItems} onSelect={handleModelSelect} />
+            <SelectInput
+              items={modelItems}
+              onSelect={handleModelSelect}
+              indicatorComponent={ThemedIndicator}
+              itemComponent={ThemedItem}
+            />
           )}
         </Box>
       )}
 
       {step === 'custom_model' && (
         <Box flexDirection="column">
-          <Text bold color="yellow">
+          <Text bold color={palette.fg}>
             Enter Custom Model ID for {selectedProvider}:
           </Text>
           <Box marginTop={1}>
-            <Text color="cyan">&gt; </Text>
+            <Text color={palette.fg}>&gt; </Text>
             <TextInput
               value={customModelInput}
               onChange={setCustomModelInput}
