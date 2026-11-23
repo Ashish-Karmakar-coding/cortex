@@ -1,0 +1,184 @@
+import { execSync } from 'node:child_process';
+import { readdirSync, statSync, readFileSync, existsSync } from 'node:fs';
+import { join, relative } from 'node:path';
+
+const IGNORE_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  '__pycache__',
+  '.venv',
+  '.next',
+  '.nuxt',
+  'coverage',
+  'build',
+  '.cache',
+  '.tox',
+  'vendor',
+]);
+
+const MAX_TREE_ENTRIES = 150;
+
+function getGitBranch(): string {
+  try {
+    return execSync('git branch --show-current', {
+      encoding: 'utf-8',
+      timeout: 5000,
+    }).trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
+function getGitStatus(): string {
+  try {
+    const status = execSync('git status --short', {
+      encoding: 'utf-8',
+      timeout: 5000,
+    }).trim();
+    if (!status) return 'Clean working tree';
+    const lines = status.split('\n');
+    if (lines.length > 20) {
+      return lines.slice(0, 20).join('\n') + `\n... and ${lines.length - 20} more files`;
+    }
+    return status;
+  } catch {
+    return 'Not a git repository';
+  }
+}
+
+function loadGitignorePatterns(): Set<string> {
+  const patterns = new Set<string>();
+  try {
+    if (existsSync('.gitignore')) {
+      const content = readFileSync('.gitignore', 'utf-8');
+      for (const line of content.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith('#')) {
+          // Simple pattern extraction — just directory names
+          const dirName = trimmed.replace(/^\//, '').replace(/\/$/, '').replace(/\*/g, '');
+          if (dirName) patterns.add(dirName);
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return patterns;
+}
+
+function buildDirectoryTree(rootDir: string, maxEntries: number): string {
+  const gitignorePatterns = loadGitignorePatterns();
+  const allIgnored = new Set([...IGNORE_DIRS, ...gitignorePatterns]);
+  const entries: string[] = [];
+
+  function walk(dir: string, prefix: string, depth: number): void {
+    if (entries.length >= maxEntries || depth > 5) return;
+
+    let items: string[];
+    try {
+      items = readdirSync(dir).sort();
+    } catch {
+      return;
+    }
+
+    // Filter out ignored items
+    items = items.filter((item) => {
+      if (item.startsWith('.') && item !== '.env.example') return false;
+      return !allIgnored.has(item);
+    });
+
+    for (let i = 0; i < items.length; i++) {
+      if (entries.length >= maxEntries) {
+        entries.push(`${prefix}... (truncated)`);
+        return;
+      }
+
+      const item = items[i]!;
+      const fullPath = join(dir, item);
+      const isLast = i === items.length - 1;
+      const connector = isLast ? '└── ' : '├── ';
+      const nextPrefix = prefix + (isLast ? '    ' : '│   ');
+
+      let stat;
+      try {
+        stat = statSync(fullPath);
+      } catch {
+        continue;
+      }
+
+      if (stat.isDirectory()) {
+        entries.push(`${prefix}${connector}${item}/`);
+        walk(fullPath, nextPrefix, depth + 1);
+      } else {
+        entries.push(`${prefix}${connector}${item}`);
+      }
+    }
+  }
+
+  walk(rootDir, '', 0);
+  return entries.join('\n');
+}
+
+export async function buildSystemPrompt(): Promise<string> {
+  const cwd = process.cwd();
+  const branch = getGitBranch();
+  const gitStatus = getGitStatus();
+  const tree = buildDirectoryTree(cwd, MAX_TREE_ENTRIES);
+
+  return `You are CodyCLI, an expert AI coding assistant operating directly in the user's terminal.
+You have full access to the local filesystem, can run shell commands, search codebases, and make surgical file edits.
+
+## Environment
+- **OS:** ${process.platform} (${process.arch})
+- **CWD:** ${cwd}
+- **Date:** ${new Date().toISOString()}
+- **Git Branch:** ${branch}
+- **Git Status:**
+${gitStatus}
+
+## Project Structure
+\`\`\`
+${tree}
+\`\`\`
+
+## Available Tools
+You have access to these tools:
+- **read_file**: Read file contents with optional line range (start_line, end_line). Lines are numbered.
+- **write_file**: Create or overwrite a file. Creates parent directories automatically.
+- **edit_file**: Make surgical edits using SEARCH/REPLACE blocks. The search_block must match exactly one location.
+- **glob_files**: Find files matching glob patterns.
+- **grep_search**: Search for regex patterns across files using ripgrep or built-in search.
+- **bash_exec**: Execute shell commands with timeout and output truncation.
+
+## Guidelines
+1. **Explore before editing.** Use read_file, grep_search, and glob_files to understand the codebase before making changes.
+2. **Use surgical edits.** Prefer edit_file with focused SEARCH/REPLACE blocks over write_file for existing files.
+3. **Include context lines.** When using edit_file, include 2-3 surrounding context lines in the search_block to ensure a unique match.
+4. **Verify changes.** After editing, run relevant tests or build commands to verify correctness.
+5. **Be concise.** Explain what you're doing and why, but don't be verbose.
+6. **Handle errors gracefully.** If a command fails, read the error output and fix the issue.
+7. **Iterate until done.** Keep working through tool calls until the task is fully resolved.
+`;
+}
+
+export const XML_TOOL_INSTRUCTIONS = `
+## Tool Calling Format
+Since you don't support native tool calling, use this XML format to call tools.
+Wrap each tool call in <tool_call> tags with a JSON payload:
+
+<tool_call>{"name": "read_file", "arguments": {"path": "src/main.ts"}}</tool_call>
+
+<tool_call>{"name": "edit_file", "arguments": {"path": "src/main.ts", "search_block": "const x = 1;", "replace_block": "const x = 2;"}}</tool_call>
+
+<tool_call>{"name": "bash_exec", "arguments": {"command": "npm test"}}</tool_call>
+
+<tool_call>{"name": "glob_files", "arguments": {"pattern": "**/*.ts"}}</tool_call>
+
+<tool_call>{"name": "grep_search", "arguments": {"pattern": "TODO|FIXME", "include": "*.ts"}}</tool_call>
+
+<tool_call>{"name": "write_file", "arguments": {"path": "new_file.ts", "content": "export const hello = 'world';\\n"}}</tool_call>
+
+You may include explanatory text before tool calls. You can call multiple tools in sequence.
+Always wait for tool results before making decisions based on file contents.
+`;
