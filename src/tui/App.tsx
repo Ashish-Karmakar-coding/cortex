@@ -333,7 +333,7 @@ export const App: React.FC<AppProps> = ({
       >
         <Box>
           <Text bold color="cyan">
-            🤖 CodyCLI{' '}
+            🤖 Cortex{' '}
           </Text>
           <Text dimColor>| </Text>
           <Text color="yellow">Provider: </Text>
@@ -389,7 +389,7 @@ export const App: React.FC<AppProps> = ({
       {!pendingApproval && !showModelSelector && (
         <Box borderStyle="single" borderColor="green" paddingX={1} marginTop={1}>
           <Text bold color="green">
-            cody&gt;{' '}
+            cortex&gt;{' '}
           </Text>
           <TextInput
             value={input}

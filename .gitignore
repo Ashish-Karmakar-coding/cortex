@@ -3,3 +3,10 @@ dist/
 *.log
 .env
 .env.local
+release/
+test/tmp/
+cortex.tar.gz
+cortex.zip
+cortex-*.tar.gz
+cortex-*.zip
+SHA256SUMS

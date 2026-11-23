@@ -1,285 +1,317 @@
-# CodyCLI 🤖
+# Cortex 🧠
 
-An open-source, production-grade agentic coding CLI tool (similar to Claude Code and Codex CLI) built in TypeScript on Node.js 22+ with full ESM support.
+**An open-source, local-first agentic coding CLI — a Claude Code / Codex CLI alternative that runs on your own models.**
 
-CodyCLI gives LLMs controlled hands inside your local filesystem, shell, and git environment using an autonomous ReAct loop, human-in-the-loop safety gating with unified diffs, local-first inference via Ollama / LM Studio, and multi-provider Bring-Your-Own-Key (BYOK) cloud support.
-
----
-
-## ✨ Key Features
-
-1. **Local-First + Bring-Your-Own-Key (BYOK) Multi-Provider Support:**
-   - **Local LLMs:** Works out-of-the-box with **Ollama** (`http://localhost:11434`) and any OpenAI-compatible local server (**LM Studio**, llama.cpp, vLLM).
-   - **Cloud Providers:** Plug in API keys for **Anthropic, OpenAI, Google Gemini, Groq, and OpenRouter**.
-   - **Dynamic Switching:** Switch providers and models on the fly via CLI flags (`--provider`, `--model`) or interactive slash commands (`/provider`, `/model`, `/key`).
-   - **Local Model Auto-Discovery:** Fetches installed Ollama models via `/api/tags` directly in the `/model` selector.
-   - **Context Window Hygiene:** Sets explicit `num_ctx` (default `16384` or `32768`) to eliminate Ollama's silent 2048/4096-token truncation.
-
-2. **Full Agentic Coding Capabilities (ReAct Loop):**
-   - Autonomous ReAct loop exploring codebases, reading files, performing surgical edits, executing shell commands, and iterating on compiler/test errors.
-   - **Interactive Ink TUI Mode:** Rich terminal user interface built with React for CLI (`ink`, `ink-spinner`, `ink-text-input`, `cli-highlight`).
-   - **Non-Interactive Unix Pipe / Headless Mode:** Pipe input directly for CI/CD or git hooks (e.g. `git diff | cody -p "write a commit message"` or `cody -p "fix failing tests" --yes`).
-   - **Surgical `edit_file` Tool:** Uses targeted `search_block` and `replace_block` matching (with whitespace-normalized fallback) and unified diff previews rather than full file rewrites.
-   - **XML Fallback Parser:** Allows smaller quantized models (7B/14B) without reliable JSON schema calling to call tools via `<tool_call>` XML blocks.
-   - **Auto-Compaction:** Automatically summarizes conversation history when token count reaches 75% of context window limits, preserving critical technical facts.
-
-3. **Human-in-the-Loop Safety:**
-   - **Tier 1 (Auto-Approved):** Read-only tools (`read_file`, `glob_files`, `grep_search`, `git_status`) execute immediately without prompting.
-   - **Tier 2 (Interactive Confirmation):** Mutating tools (`write_file`, `edit_file`, `bash_exec`) pause execution and display colour-coded unified diffs or command previews, offering `[y] Allow once`, `[a] Allow for session`, or `[n] Reject with feedback`.
-   - **Tier 3 (Dangerous Pattern Block):** Commands matching destructive shell patterns (`rm -rf /`, `mkfs`, `dd if=`, pipe-to-shell, etc.) are blocked before execution.
-
-4. **Persistence & Extensibility:**
-   - **Session Storage:** Fast session persistence using Node.js 22's built-in `node:sqlite` database. Resume previous sessions with `--resume <id>`.
-   - **Secure Config:** Stored at `~/.config/codycli/config.json` with strict `0600` permissions.
-   - **Model Context Protocol (MCP):** Connects to external tool servers via standard stdio or Streamable HTTP transports configured in `~/.config/codycli/mcp.json`.
-
----
-
-## 🏗️ Architecture
+Cortex gives an LLM controlled hands inside your terminal: it explores repositories, reads and edits files, runs shell commands, checks git state, and iterates on failures. It works out of the box with **local models via Ollama / LM Studio**, and supports **bring-your-own-key** cloud providers when you want more horsepower.
 
 ```
-[User Prompt / Pipe Input]
-         │
-         ▼
-[Context Builder] ──► Injects OS, CWD, Git branch & status, Directory tree skeleton
-         │
-         ▼
-[LLM Provider Stream] ──► Streams tokens to Ink TUI / stdout in real time
-         │
-         ├──► (Model outputs plain text) ──► Renders response & waits for next prompt
-         │
-         └──► (Model emits Tool Call - Native or XML fallback)
-                    │
-                    ▼
-            [Permission Gate]
-              ├── Read-only tool? ──► Execute immediately
-              └── Mutating/Shell? ──► Pause loop, render Unified Diff, await [y/a/n]
-                    │
-                    ▼
-            [Tool Execution] ──► Runs locally, truncates huge outputs (e.g. >300 lines)
-                    │
-                    ▼
-            [Append Result to Context] ──► Loops back to [LLM Provider Stream]
+ ██████╗ ██████╗ ██████╗ ████████╗███████╗██╗  ██╗
+██╔════╝██╔═══██╗██╔══██╗╚══██╔══╝██╔════╝╚██╗██╔╝
+██║     ██║   ██║██████╔╝   ██║   █████╗   ╚███╔╝
+██║     ██║   ██║██╔══██╗   ██║   ██╔══╝   ██╔██╗
+╚██████╗╚██████╔╝██║  ██║   ██║   ███████╗██╔╝ ██╗
+ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 ```
 
 ---
 
-## 🚀 Quick Start
+## Install
 
-### Prerequisites
-- **Node.js 22.0.0+**
-- **npm** or **pnpm** / **yarn**
+**Requirements:** [Node.js](https://nodejs.org) **22.13 or newer** (Cortex uses the built-in `node:sqlite` module).
 
-### 1. Installation & Build
+### macOS / Linux
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/codycli.git
-cd codycli
-
-# Install dependencies
-npm install
-
-# Build TypeScript to dist/
-npm run build
-
-# Link globally for terminal access
-npm link
+curl -fsSL https://raw.githubusercontent.com/Ashish-Karmakar-coding/cortex/main/install.sh | bash
 ```
 
-Now `cody` is available from anywhere in your shell.
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/Ashish-Karmakar-coding/cortex/main/install.ps1 | iex
+```
+
+Or with curl, if you prefer:
+
+```powershell
+curl.exe -fsSL https://raw.githubusercontent.com/Ashish-Karmakar-coding/cortex/main/install.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
+```
+
+### What the installer does
+
+- Downloads the latest **self-contained release** from GitHub Releases (a single bundled `cortex.js` — no `npm install` of dependencies).
+- Installs it to `~/.cortex` (override with `CORTEX_HOME`).
+- Adds a `cortex` launcher to `~/.local/bin` (Unix) or `~/.cortex\bin` on your user `PATH` (Windows).
+- Verifies Node.js 22.13+ is present.
+
+Then open a new terminal and run:
+
+```bash
+cortex
+```
+
+> **Windows note:** if `cortex` is not recognized, open a new terminal so the updated `PATH` is loaded.
+
+### Install options
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CORTEX_HOME` | `~/.cortex` | Install directory and config/data directory |
+| `CORTEX_BIN_DIR` | `~/.local/bin` | Where the `cortex` launcher is linked (Unix) |
+| `CORTEX_VERSION` | `latest` | Install a specific release tag (e.g. `v0.1.0`) |
+| `CORTEX_REPO` | `Ashish-Karmakar-coding/cortex` | Repo to download releases from |
+| `CORTEX_DOWNLOAD_URL` | — | Direct archive URL (mirrors, air-gapped installs) |
+
+Example:
+
+```bash
+CORTEX_HOME="$HOME/tools/cortex" CORTEX_VERSION=v0.1.0 \
+  curl -fsSL https://raw.githubusercontent.com/Ashish-Karmakar-coding/cortex/main/install.sh | bash
+```
+
+### Update
+
+```bash
+cortex upgrade
+```
+
+The same installer is re-run, so the latest release replaces the current bundle. Your config, API keys, and sessions in `~/.cortex` are preserved.
+
+### Uninstall
+
+```bash
+# macOS / Linux
+rm -rf ~/.cortex ~/.local/bin/cortex
+
+# Windows (PowerShell)
+Remove-Item -Recurse -Force "$HOME\.cortex"
+# then remove %USERPROFILE%\.cortex\bin from your user PATH
+```
 
 ---
 
-## 🦙 Local LLM Setup (Ollama & LM Studio)
+## Quick start with a local model (no API key)
 
-### Using with Ollama (Default)
+1. Install [Ollama](https://ollama.com) and pull a coding model:
 
-1. Install and start [Ollama](https://ollama.com/):
    ```bash
-   ollama serve
+   ollama pull qwen2.5-coder:7b
    ```
-2. Pull a recommended coding model:
-   ```bash
-   ollama pull qwen2.5-coder:14b
-   # or
-   ollama pull llama3.2
-   ```
-3. Run CodyCLI:
-   ```bash
-   cody --provider ollama --model qwen2.5-coder:14b
-   ```
-   Or set it interactively inside the CLI using `/model`.
 
-### Using with LM Studio / vLLM / llama.cpp
+2. Start Cortex in any project:
 
-Start LM Studio's local server (default: `http://localhost:1234/v1`), then run:
-```bash
-cody --provider lmstudio --model local-model
+   ```bash
+   cd my-project
+   cortex
+   ```
+
+Cortex defaults to Ollama at `http://localhost:11434`. Inside the TUI:
+
 ```
+/model
+```
+
+lists models installed on your machine and lets you switch.
+
+Switch directly from the command line:
+
+```bash
+cortex --provider ollama --model qwen2.5-coder:7b
+```
+
+### LM Studio / llama.cpp / vLLM
+
+Use the OpenAI-compatible provider:
+
+```bash
+cortex --provider lmstudio --model <model-id>
+```
+
+The default endpoint is `http://localhost:1234/v1`. Set a custom host by editing `~/.cortex/config.json` or `OLLAMA_HOST` for Ollama.
 
 ---
 
-## 🔑 Cloud BYOK (Bring Your Own Key)
+## Cloud providers (bring your own key)
 
-Set keys via environment variables:
+Cortex never requires a key, but it will use one if you provide it.
+
+| Provider | `--provider` | API key env var |
+| --- | --- | --- |
+| OpenAI | `openai` | `OPENAI_API_KEY` |
+| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` |
+| Google Gemini | `google` | `GOOGLE_API_KEY` |
+| Groq | `groq` | `GROQ_API_KEY` |
+| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
+
+Either export the env var:
 
 ```bash
-# Anthropic
-export ANTHROPIC_API_KEY="sk-ant-..."
-
-# OpenAI
-export OPENAI_API_KEY="sk-proj-..."
-
-# Google Gemini
-export GOOGLE_API_KEY="AIzaSy..."
-
-# Groq
-export GROQ_API_KEY="gsk_..."
-
-# OpenRouter
-export OPENROUTER_API_KEY="sk-or-..."
+export ANTHROPIC_API_KEY=sk-ant-...
+cortex --provider anthropic --model claude-sonnet-4-20250514
 ```
 
-Or set keys persistently inside CodyCLI using the slash command:
+Or save it once from inside Cortex (stored in `~/.cortex/config.json`, `chmod 0600` on Unix):
+
 ```text
-cody> /key anthropic sk-ant-...
-cody> /key openai sk-proj-...
-cody> /key google AIzaSy...
+/key anthropic sk-ant-...
 ```
-Keys are saved to `~/.config/codycli/config.json` with `chmod 0600` file permissions.
+
+Then switch providers/models interactively:
+
+```text
+/provider
+/model
+```
+
+The current provider, model, and context window are always shown in the TUI header.
 
 ---
 
-## 💻 Usage Modes
+## Usage
 
-### 1. Interactive TUI Mode
-
-Launch the interactive interface in your project directory:
+### Interactive TUI
 
 ```bash
-cody
+cortex
 ```
 
-You can pass initial flags:
-```bash
-cody --provider anthropic --model claude-sonnet-4-20250514
-```
+Keyboard shortcuts: `Ctrl+C` aborts the current operation (press twice when idle to exit).
 
-### 2. Non-Interactive Unix Pipe / Headless Mode
-
-Combine CodyCLI with git, tests, and standard Unix pipelines:
+### Non-interactive / pipe mode
 
 ```bash
-# Code review a git diff
-git diff | cody -p "Review this diff for bugs and performance issues"
+cortex -p "explain the architecture of this repo"
 
-# Generate a commit message
-git diff --cached | cody -p "Generate a concise conventional commit message"
-
-# Run tests and fix failing files automatically
-cody -p "Run npm test and fix any failing test cases" --yes
-
-# Check git status and explain untracked files
-git status | cody -p "Summarize what changed"
+git diff | cortex -p "review this diff for bugs"
+git diff --cached | cortex -p "write a conventional commit message"
+cortex -p "run the tests and fix any failures" --yes
 ```
 
-The `--yes` flag auto-approves all tool executions, making it suitable for automated CI/CD scripts.
+`--yes` auto-approves mutating tools. Without it, pipe mode rejects mutations and tells the model why.
 
----
+### CLI flags
 
-## ⌨️ Interactive Slash Commands
+```
+-p, --prompt <text>     Non-interactive prompt (pipe mode)
+--provider <name>       Override provider
+--model <name>          Override model
+--yes                   Auto-approve all tool calls
+--resume <session-id>   Resume a previous session
+--plain                 Line-based mode instead of the Ink TUI
+--num-ctx <number>      Ollama context window size (default 16384)
+-V, --version           Print version
+-h, --help              Help
+```
 
-Inside the interactive mode, use these commands at the prompt:
+### Slash commands
 
 | Command | Description |
-|---------|-------------|
-| `/provider` | Switch between `ollama`, `lmstudio`, `openai`, `anthropic`, `google`, `groq`, `openrouter` |
-| `/model` | Open interactive model selector (auto-fetches live Ollama models or shows curated list) |
-| `/key <provider> <key>` | Securely store an API key in `config.json` with 0600 permissions |
-| `/compact` | Compress conversation history into a dense technical summary to free up tokens |
-| `/sessions` | List saved SQLite sessions with their IDs and timestamps |
-| `/clear` | Clear the current conversation history |
-| `/help` | Display command help and keyboard shortcuts |
+| --- | --- |
+| `/model` | List/select a model (auto-discovers Ollama models) |
+| `/provider` | Switch provider |
+| `/key <provider> <key>` | Save an API key |
+| `/compact` | Summarise and shrink the conversation |
+| `/sessions` | List saved sessions |
+| `/clear` | Reset the conversation |
+| `/help` | Show help |
 
-### Keyboard Shortcuts
-- **Ctrl+C (while streaming / running command):** Aborts the active process tree cleanly and preserves conversation state.
-- **Ctrl+C (twice on empty prompt):** Exits the CLI cleanly.
-- **Esc:** Closes modals or cancels rejection prompts.
-- **y / a / n:** In approval dialog, triggers *Allow once*, *Allow for session*, or *Reject with feedback*.
+Resume work later:
+
+```bash
+cortex --resume <session-id>
+```
 
 ---
 
-## 🔌 Model Context Protocol (MCP) Integration
+## How it works
 
-CodyCLI supports connecting to external MCP tool servers. Create `~/.config/codycli/mcp.json`:
+- **ReAct agent loop** with up to 25 tool iterations per request, streaming output, and abort support.
+- **Tools:** `read_file` (line ranges), `write_file`, `edit_file` (surgical SEARCH/REPLACE blocks with unified diffs), `glob_files`, `grep_search` (ripgrep with JS fallback), `bash_exec` (timeouts, output truncation, dangerous-command blocking).
+- **Human-in-the-loop safety:** read-only tools run automatically; file writes, edits, and shell commands show a colour-coded diff/command preview and ask `[y] once / [a] session / [n] reject`.
+- **Small-model friendly:** models without native tool calling get an XML `<tool_call>` fallback parser, so local 7B models still work.
+- **Context management:** token estimation and automatic conversation compaction at ~75% of the model's context window.
+- **MCP support:** connect external tool servers over stdio or Streamable HTTP.
+
+### Configuration files
+
+All state lives in `~/.cortex` (or `$CORTEX_HOME`):
+
+```
+~/.cortex/
+├── bin/cortex.js        # installed bundle
+├── config.json          # active provider/model, keys, endpoints
+├── sessions.db          # SQLite session history
+└── mcp.json             # optional MCP servers
+```
+
+`mcp.json`:
 
 ```json
 {
-  "servers": [
-    {
-      "name": "github",
-      "transport": "stdio",
+  "mcpServers": {
+    "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..."
-      }
-    },
-    {
-      "name": "postgres",
-      "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/mydb"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/project"]
     }
-  ]
+  }
 }
 ```
 
-Tools exposed by these servers are automatically discovered and registered with the agent loop.
+Environment variables always override saved keys.
 
 ---
 
-## 📂 Project Structure
+## Build from source
+
+```bash
+git clone https://github.com/Ashish-Karmakar-coding/cortex.git
+cd cortex
+npm install
+npm run build       # bundles src/ -> dist/cortex.js
+node dist/cortex.js --version
+```
+
+Useful scripts:
+
+| Script | Description |
+| --- | --- |
+| `npm run build` | Type-check-free esbuild bundle (fast, single file) |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm test` | Subsystem verification suite |
+| `npm run dev` | Build and launch |
+| `npm run package` | Stage release files in `release/cortex` |
+
+### Releasing
+
+Pushing a tag triggers the GitHub Actions release workflow, which builds the bundle, runs tests, and publishes:
 
 ```
-codycli/
-├── package.json              # bin entry point, dependencies, build scripts
-├── tsconfig.json             # TypeScript 5.7+ strict ESM configuration
-├── README.md                 # Documentation
-├── LICENSE                   # MIT License
-└── src/
-    ├── index.ts              # CLI entrypoint (TTY detection, pipe handler, CLI flags)
-    ├── config/
-    │   ├── store.ts          # Read/write ~/.config/codycli/config.json with 0600 permissions
-    │   └── models.ts         # Provider registry, context limits, Ollama model discovery
-    ├── providers/
-    │   └── factory.ts        # Unified AI SDK model creator with num_ctx options
-    ├── agent/
-    │   ├── loop.ts           # Core ReAct loop, streaming, diff previews, approval gate
-    │   ├── prompts.ts        # Dynamic system prompt (OS, cwd, git branch, repo map)
-    │   ├── fallbackParser.ts # XML/JSON tool-call parser for local LLMs
-    │   └── compaction.ts     # Token estimator & conversation summarizer (75% limit)
-    ├── tools/
-    │   ├── registry.ts       # Zod tool definitions, permissions, dangerous patterns
-    │   ├── fs.ts             # read_file (line-ranged), write_file, edit_file (SEARCH/REPLACE)
-    │   ├── search.ts         # glob_files, grep_search (ripgrep with JS fallback)
-    │   └── shell.ts          # bash_exec (timeout, output truncation, process kill)
-    ├── mcp/
-    │   └── client.ts         # MCP client loader (stdio and streamable HTTP)
-    ├── persistence/
-    │   └── sessions.ts       # SQLite session history store using node:sqlite
-    └── tui/
-        ├── App.tsx           # Root Ink component with keyboard listeners
-        ├── MessageList.tsx   # Markdown + syntax-highlighted streaming renderer
-        ├── ApprovalPrompt.tsx# Interactive diff viewer & tool permission selector
-        └── ModelSelector.tsx # Interactive provider/model & API key modal
+cortex.tar.gz        # macOS / Linux installer asset
+cortex.zip           # Windows installer asset
+cortex-<version>.*   # versioned copies
+SHA256SUMS
+```
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 ---
 
-## 🛡️ License
+## Troubleshooting
 
-MIT License. See [LICENSE](LICENSE) for details.
-#   c o r t e x  
- 
+| Problem | Fix |
+| --- | --- |
+| `cortex: command not found` | Open a new terminal, or add `~/.local/bin` (Unix) / `%USERPROFILE%\.cortex\bin` (Windows) to `PATH`. |
+| `Node.js ... is too old` | Install Node.js 22.13+. |
+| `No models found` | Make sure Ollama is running (`ollama serve`) or LM Studio's server is enabled. |
+| Local model never calls tools | Try `/model` with a tool-capable model (e.g. `qwen2.5-coder`); Cortex also falls back to XML tool calls for smaller models. |
+| Windows SQLite warning | `node:sqlite` is still marked experimental by Node; the warning is harmless. |
+| Installer 404 | No release has been published yet — check the repo's **Releases** page, or build from source. |
+
+---
+
+## License
+
+[MIT](LICENSE)

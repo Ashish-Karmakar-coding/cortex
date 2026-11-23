@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Subsystem tests
+        run: npm test
+
+      - name: Stage release files
+        run: npm run package
+
+      - name: Create archives
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd release/cortex
+          tar -czf "$GITHUB_WORKSPACE/cortex.tar.gz" .
+          zip -qr "$GITHUB_WORKSPACE/cortex.zip" .
+          cp "$GITHUB_WORKSPACE/cortex.tar.gz" "$GITHUB_WORKSPACE/cortex-${VERSION}.tar.gz"
+          cp "$GITHUB_WORKSPACE/cortex.zip" "$GITHUB_WORKSPACE/cortex-${VERSION}.zip"
+          cd "$GITHUB_WORKSPACE"
+          sha256sum cortex.tar.gz cortex.zip > SHA256SUMS
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            cortex.tar.gz
+            cortex.zip
+            cortex-*.tar.gz
+            cortex-*.zip
+            SHA256SUMS
+          generate_release_notes: true

@@ -43,7 +43,7 @@ export class MCPManager {
     for (const config of configs) {
       try {
         const client = new Client({
-          name: 'codycli',
+          name: 'cortex',
           version: '0.1.0',
         });
 

@@ -11,6 +11,9 @@ import { CURATED_MODELS, getModelInfo } from '../src/config/models.js';
 import { rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+// Keep tests hermetic: never touch the real ~/.cortex config or sessions DB.
+process.env['CORTEX_HOME'] = join(process.cwd(), 'test', 'tmp', 'home');
+
 let passed = 0;
 let failed = 0;
 
@@ -27,7 +30,7 @@ function assert(condition: boolean, testName: string, details?: string) {
 
 async function runAllTests() {
   console.log('\n\x1b[1m═══════════════════════════════════════════════════════════\x1b[0m');
-  console.log('\x1b[1m   🧪 CodyCLI Subsystem Verification & Health Check        \x1b[0m');
+  console.log('\x1b[1m   🧪 Cortex Subsystem Verification & Health Check        \x1b[0m');
   console.log('\x1b[1m═══════════════════════════════════════════════════════════\x1b[0m\n');
 
   const testDir = join(process.cwd(), 'test', 'tmp');

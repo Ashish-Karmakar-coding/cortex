@@ -28,10 +28,12 @@ const ENV_HOST_MAP: Record<string, string> = {
 };
 
 export function getConfigDir(): string {
-  if (process.platform === 'win32' && process.env['APPDATA']) {
-    return join(process.env['APPDATA'], 'codycli');
+  // CORTEX_HOME lets users (and the installer) relocate both config and data.
+  const override = process.env['CORTEX_HOME'];
+  if (override) {
+    return override;
   }
-  return join(homedir(), '.config', 'codycli');
+  return join(homedir(), '.cortex');
 }
 
 function getConfigPath(): string {

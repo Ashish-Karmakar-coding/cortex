@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import { Command } from 'commander';
 import { loadConfig, saveConfig, setApiKey } from './config/store.js';
 import { type Provider, getModelInfo, listAvailableModels } from './config/models.js';
@@ -8,13 +6,15 @@ import { runAgentLoop, type AgentState, type ApprovalCallback } from './agent/lo
 import { SessionStore } from './persistence/sessions.js';
 import type { CoreMessage } from 'ai';
 import { createInterface } from 'node:readline';
+import { spawnSync } from 'node:child_process';
+import { VERSION, REPO } from './version.js';
 
 const program = new Command();
 
 program
-  .name('cody')
-  .description('CodyCLI — An agentic AI coding assistant for your terminal')
-  .version('0.1.0')
+  .name('cortex')
+  .description('Cortex — An agentic AI coding assistant for your terminal')
+  .version(VERSION)
   .option('-p, --prompt <text>', 'Non-interactive prompt (pipe mode)')
   .option('--provider <name>', 'Override LLM provider')
   .option('--model <name>', 'Override model')
@@ -23,7 +23,21 @@ program
   .option('--plain', 'Use plain line-by-line terminal mode instead of Ink TUI')
   .option('--num-ctx <number>', 'Set Ollama context window size', '16384');
 
-program.parse(process.argv);
+program
+  .command('upgrade')
+  .description('Update Cortex to the latest release from GitHub')
+  .action(() => {
+    upgradeRequested = true;
+  });
+
+// Defining a subcommand makes Commander print help when the root command has no
+// action. This no-op keeps `cortex` / `cortex --plain` working as before.
+program.action(() => {});
+
+let upgradeRequested = false;
+
+await program.parseAsync(process.argv);
+
 const opts = program.opts<{
   prompt?: string;
   provider?: string;
@@ -33,6 +47,42 @@ const opts = program.opts<{
   plain?: boolean;
   numCtx: string;
 }>();
+
+function upgrade(): void {
+  console.log(`Updating Cortex (${REPO}) to the latest release...`);
+  const installerUrl = `https://raw.githubusercontent.com/${REPO}/main`;
+
+  const result =
+    process.platform === 'win32'
+      ? spawnSync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-Command',
+            `irm ${installerUrl}/install.ps1 | iex`,
+          ],
+          { stdio: 'inherit' }
+        )
+      : spawnSync(
+          'bash',
+          ['-c', `curl -fsSL ${installerUrl}/install.sh | bash`],
+          { stdio: 'inherit' }
+        );
+
+  if (result.error) {
+    console.error(`\nUpdate failed: ${result.error.message}`);
+    console.error(`Re-run the installer manually:\n  ${installerUrl}/install.sh`);
+    process.exit(1);
+  }
+  if (result.status !== 0) {
+    console.error('\nUpdate failed. Re-run the installer manually.');
+    process.exit(result.status ?? 1);
+  }
+  console.log('\nCortex is up to date. Restart the CLI to use the new version.');
+}
+
 
 async function main() {
   const config = loadConfig();
@@ -164,7 +214,7 @@ async function main() {
   } else {
     // === Plain Terminal Readline Fallback Mode ===
     console.log('\x1b[36m╔══════════════════════════════════════════════╗\x1b[0m');
-    console.log('\x1b[36m║\x1b[0m  🤖 \x1b[1mCodyCLI\x1b[0m — Agentic AI Coding Assistant   \x1b[36m║\x1b[0m');
+    console.log('\x1b[36m║\x1b[0m  🤖 \x1b[1mCortex\x1b[0m — Agentic AI Coding Assistant   \x1b[36m║\x1b[0m');
     console.log('\x1b[36m╚══════════════════════════════════════════════╝\x1b[0m');
     console.log(`  Provider: \x1b[33m${config.activeProvider}\x1b[0m | Model: \x1b[33m${config.activeModel}\x1b[0m`);
     console.log('  Type your request, or use slash commands:');
@@ -173,7 +223,7 @@ async function main() {
     const rl = createInterface({
       input: process.stdin,
       output: process.stdout,
-      prompt: '\x1b[32mcody>\x1b[0m ',
+      prompt: '\x1b[32mcortex>\x1b[0m ',
     });
 
     let ctrlCCount = 0;
@@ -401,7 +451,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+if (upgradeRequested) {
+  upgrade();
+  process.exit(0);
+}
+
+await main().catch((err) => {
   console.error(`Fatal error: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 });
