@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import SelectInput from 'ink-select-input';
 import TextInput from 'ink-text-input';
@@ -22,7 +22,7 @@ interface ProviderItem {
 const PROVIDERS: ProviderItem[] = [
   { label: 'Ollama (Local - http://localhost:11434)', value: 'ollama' },
   { label: 'LM Studio (Local - http://localhost:1234/v1)', value: 'lmstudio' },
-  { label: 'Anthropic (Claude 3.5 Sonnet / Haiku)', value: 'anthropic' },
+  { label: 'Anthropic (Claude Sonnet 4 / Haiku)', value: 'anthropic' },
   { label: 'OpenAI (GPT-4o / o3-mini)', value: 'openai' },
   { label: 'Google Gemini (Gemini 2.5 Flash / Pro)', value: 'google' },
   { label: 'Groq (Llama 3.3 70B Fast Inference)', value: 'groq' },
@@ -47,7 +47,6 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ config, onSelect, 
     const prov = item.value;
     setSelectedProvider(prov);
 
-    // If cloud provider and no API key is configured or in env
     const existingKey = config.providers[prov]?.apiKey;
     const isCloud = prov !== 'ollama' && prov !== 'lmstudio';
 
@@ -56,7 +55,6 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ config, onSelect, 
       return;
     }
 
-    // Otherwise proceed to model selection
     await loadModelsForProvider(prov);
     setStep('model');
   };
@@ -99,7 +97,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ config, onSelect, 
 
   const modelItems = [
     ...models.map((m) => ({
-      label: `${m.name} (${m.id}) [${m.contextWindow.toLocaleString()} tokens]`,
+      label: `${m.name} (${m.id}) [${m.supportsToolCalling ? 'tools' : 'xml'}, ${m.contextWindow.toLocaleString()} ctx]`,
       value: m.id,
     })),
     { label: '✏️ Enter custom model ID...', value: '__custom__' },
@@ -115,15 +113,18 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ config, onSelect, 
       marginY={1}
     >
       <Box marginBottom={1}>
-        <Text bold color={palette.fg}>
+        <Text bold color={palette.fg} backgroundColor={palette.bg}>
           ⚙️ Model & Provider Configuration
         </Text>
-        <Text dimColor> (Press Esc to cancel)</Text>
+        <Text color={palette.muted} backgroundColor={palette.bg}>
+          {' '}
+          (Press Esc to cancel)
+        </Text>
       </Box>
 
       {step === 'provider' && (
         <Box flexDirection="column">
-          <Text bold color={palette.fg}>
+          <Text bold color={palette.fg} backgroundColor={palette.bg}>
             Select LLM Provider:
           </Text>
           <SelectInput
@@ -137,12 +138,16 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ config, onSelect, 
 
       {step === 'key' && (
         <Box flexDirection="column">
-          <Text bold color={palette.fg}>
+          <Text bold color={palette.fg} backgroundColor={palette.bg}>
             Enter API key for {selectedProvider}:
           </Text>
-          <Text dimColor>Keys are stored securely with 0600 file permissions.</Text>
+          <Text color={palette.muted} backgroundColor={palette.bg}>
+            Keys are stored securely with 0600 file permissions.
+          </Text>
           <Box marginTop={1}>
-            <Text color={palette.fg}>&gt; </Text>
+            <Text color={palette.fg} backgroundColor={palette.bg}>
+              &gt;{' '}
+            </Text>
             <TextInput
               value={apiKey}
               onChange={setApiKey}
@@ -156,11 +161,13 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ config, onSelect, 
 
       {step === 'model' && (
         <Box flexDirection="column">
-          <Text bold color={palette.fg}>
+          <Text bold color={palette.fg} backgroundColor={palette.bg}>
             Select Model for {selectedProvider}:
           </Text>
           {loadingModels ? (
-            <Text color={palette.muted}>Loading available models...</Text>
+            <Text color={palette.muted} backgroundColor={palette.bg}>
+              Loading available models...
+            </Text>
           ) : (
             <SelectInput
               items={modelItems}
@@ -174,11 +181,13 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ config, onSelect, 
 
       {step === 'custom_model' && (
         <Box flexDirection="column">
-          <Text bold color={palette.fg}>
+          <Text bold color={palette.fg} backgroundColor={palette.bg}>
             Enter Custom Model ID for {selectedProvider}:
           </Text>
           <Box marginTop={1}>
-            <Text color={palette.fg}>&gt; </Text>
+            <Text color={palette.fg} backgroundColor={palette.bg}>
+              &gt;{' '}
+            </Text>
             <TextInput
               value={customModelInput}
               onChange={setCustomModelInput}

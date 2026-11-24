@@ -9,20 +9,23 @@
     curl.exe -fsSL https://raw.githubusercontent.com/Ashish-Karmakar-coding/cortex/main/install.ps1 | powershell -NoProfile -ExecutionPolicy Bypass -Command -
 
 .NOTES
-    CORTEX_HOME          Install directory      (default: %USERPROFILE%\.cortex)
-    CORTEX_VERSION       Release tag to install (default: latest)
-    CORTEX_REPO          GitHub owner/repo      (default: Ashish-Karmakar-coding/cortex)
-    CORTEX_DOWNLOAD_URL  Override archive URL   (mirrors/testing)
+    CORTEX_HOME          Install directory           (default: %USERPROFILE%\.cortex)
+    CORTEX_STORAGE_DIR   Local storage partition dir (default: %USERPROFILE%\.cortex\storage)
+    CORTEX_VERSION       Release tag to install      (default: latest)
+    CORTEX_REPO          GitHub owner/repo           (default: Ashish-Karmakar-coding/cortex)
+    CORTEX_DOWNLOAD_URL  Override archive URL        (mirrors/testing)
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = $env:CORTEX_VERSION
+    [string]$Version = $env:CORTEX_VERSION,
+    [string]$StorageDir = $env:CORTEX_STORAGE_DIR
 )
 
 $ErrorActionPreference = 'Stop'
 
 $Repo = if ($env:CORTEX_REPO) { $env:CORTEX_REPO } else { 'Ashish-Karmakar-coding/cortex' }
 $CortexHome = if ($env:CORTEX_HOME) { $env:CORTEX_HOME } else { Join-Path $HOME '.cortex' }
+$ResolvedStorageDir = if ($StorageDir) { $StorageDir } else { Join-Path $CortexHome 'storage' }
 $BinDir = Join-Path $CortexHome 'bin'
 
 function Write-Cyan([string]$Message) { Write-Host $Message -ForegroundColor Cyan }
@@ -108,6 +111,15 @@ node --disable-warning=ExperimentalWarning "%~dp0cortex.js" %*
 "@
 Set-Content -Path $Launcher -Value $LauncherContent -Encoding Ascii
 
+# --- Local Storage Partition ------------------------------------------------
+
+try {
+    $env:CORTEX_HOME = $CortexHome
+    & node --disable-warning=ExperimentalWarning $Bundle init-storage --storage-dir $ResolvedStorageDir | Out-Null
+} catch {
+    Write-Host "warning: Could not pre-initialize storage partition ($($_.Exception.Message)). It will initialize on first launch." -ForegroundColor Yellow
+}
+
 # --- PATH -------------------------------------------------------------------
 
 $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -135,8 +147,9 @@ $InstalledVersion = 'unknown'
 try { $InstalledVersion = (& node $Bundle --version).Trim() } catch { }
 
 Write-Ok "Cortex $InstalledVersion installed."
-Write-Host "  Binary : $Launcher"
-Write-Host "  Data   : $CortexHome"
+Write-Host "  Binary  : $Launcher"
+Write-Host "  Config  : $CortexHome"
+Write-Host "  Storage : $ResolvedStorageDir"
 Write-Host ''
 Write-Host 'Run: cortex'
 if (-not $HasBinDir -and -not $env:CORTEX_NO_MODIFY_PATH) {

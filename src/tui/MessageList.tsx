@@ -20,7 +20,7 @@ export interface MessageListProps {
   activeTool?: { name: string; args?: Record<string, unknown> };
 }
 
-/** Keep syntax highlighting inside the Cortex palette. */
+/** Keep syntax highlighting inside the solid Cortex palette. */
 const CODE_THEME = {
   keyword: chalk.hex(palette.warning),
   built_in: chalk.hex(palette.fg),
@@ -60,7 +60,6 @@ function highlightCode(code: string, language: string): string {
     result = code;
   }
 
-  // Bound the cache so long sessions do not grow without limit.
   if (highlightCache.size > 200) {
     const oldest = highlightCache.keys().next().value;
     if (oldest !== undefined) highlightCache.delete(oldest);
@@ -70,26 +69,36 @@ function highlightCode(code: string, language: string): string {
 }
 
 /**
- * XML/JSON tool-call syntax from the fallback parser should never be shown to
- * the user. Tool activity is rendered as its own message instead.
+ * XML/JSON tool-call syntax and internal thinking scratchpads should never be
+ * shown directly in the transcript. Tool activity is rendered as its own item.
  */
 export function stripToolCallMarkup(content: string, streaming = false): string {
-  let text = content;
+  let text = content.replace(/<think>[\s\S]*?<\/think>/gi, '');
 
   if (streaming) {
-    // Hide a partially-received XML tool call.
-    const open = text.lastIndexOf('<tool_call>');
+    const thinkOpen = text.lastIndexOf('<think>');
+    const thinkClose = text.lastIndexOf('</think>');
+    if (thinkOpen > thinkClose) {
+      text = text.slice(0, thinkOpen);
+    }
+
+    const open = text.lastIndexOf('<tool_call');
     const close = text.lastIndexOf('</tool_call>');
     if (open > close) {
       text = text.slice(0, open);
     }
 
-    // Hide a partially-received JSON tool-call fence.
+    const fnOpen = text.lastIndexOf('<function=');
+    const fnClose = text.lastIndexOf('</function>');
+    if (fnOpen > fnClose) {
+      text = text.slice(0, fnOpen);
+    }
+
     const fence = text.lastIndexOf('```');
     if (fence !== -1) {
       const tail = text.slice(fence);
       if (
-        /^```(?:json)?\s*\n?\s*\{[\s\S]*"name"/.test(tail) &&
+        /^```(?:json|tool_call)?\s*\n?\s*[\[{][\s\S]*"(?:name|tool|function)"/i.test(tail) &&
         !tail.trimEnd().endsWith('```')
       ) {
         text = text.slice(0, fence);
@@ -98,9 +107,11 @@ export function stripToolCallMarkup(content: string, streaming = false): string 
   }
 
   return text
-    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+    .replace(/<tool_call[\s\S]*?<\/tool_call>/gi, '')
+    .replace(/<function=[\s\S]*?<\/function>/gi, '')
+    .replace(/<invoke[\s\S]*?<\/invoke>/gi, '')
     .replace(
-      /```(?:json)?\s*\n?\s*\{[\s\S]*?"name"[\s\S]*?"arguments"[\s\S]*?\}\s*\n?\s*```/g,
+      /```(?:json|tool_call)?\s*\n?\s*[\[{][\s\S]*?"(?:name|tool|function)"[\s\S]*?"(?:arguments|args|parameters|params|input)"[\s\S]*?[\]}]\s*\n?\s*```/gi,
       ''
     )
     .replace(/\n{3,}/g, '\n\n')
@@ -132,8 +143,6 @@ function renderContent(
 
     const language = match[1] || 'typescript';
     const code = match[2] ?? '';
-    // Highlighting every frame is expensive. While streaming we render the
-    // code plainly, then highlight once when the message is finalized.
     const rendered = streaming ? code : highlightCode(code, language);
 
     parts.push(
@@ -146,7 +155,7 @@ function renderContent(
         flexDirection="column"
       >
         {language ? (
-          <Text dimColor bold color={palette.fg} backgroundColor={palette.bg}>
+          <Text bold color={palette.muted} backgroundColor={palette.bg}>
             [{language}]
           </Text>
         ) : null}
@@ -211,8 +220,6 @@ export const MessageItem = React.memo<MessageItemProps>(({ message }) => {
     }
 
     if (streaming) {
-      // Keep the live area smaller than the terminal. The full answer is
-      // written to the permanent <Static> output when the turn finishes.
       const maxLines = Math.max(6, Math.min(16, (process.stdout.rows ?? 30) - 20));
       const lines = visible.split('\n');
       if (lines.length > maxLines) {
@@ -255,7 +262,6 @@ export const MessageItem = React.memo<MessageItemProps>(({ message }) => {
     );
   }
 
-  // System / informational messages.
   const isWelcome = message.variant === 'welcome';
   const isError = message.variant === 'error';
 
@@ -298,7 +304,7 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, activeTool }
         <Box marginY={1} paddingLeft={2}>
           <Text color={palette.fg} backgroundColor={palette.bg}>
             <Spinner type="dots" /> Running{' '}
-            <Text bold color={palette.fg}>
+            <Text bold color={palette.fg} backgroundColor={palette.bg}>
               {activeTool.name}
             </Text>
             {activeTool.args

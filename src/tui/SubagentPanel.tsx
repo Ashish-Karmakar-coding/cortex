@@ -24,23 +24,35 @@ export const SubagentPanel: React.FC<SubagentPanelProps> = ({ runs }) => {
       {runs.map((run) => {
         const icon =
           run.status === 'running' ? (
-            <Spinner type="dots" />
+            <Text color={palette.warning} backgroundColor={palette.bg}>
+              <Spinner type="dots" />
+            </Text>
           ) : run.status === 'done' ? (
-            <Text color={palette.success}>✓</Text>
+            <Text color={palette.success} backgroundColor={palette.bg}>
+              ✓
+            </Text>
           ) : (
-            <Text color={palette.danger}>✗</Text>
+            <Text color={palette.danger} backgroundColor={palette.bg}>
+              ✗
+            </Text>
           );
 
         return (
           <Box key={run.id}>
             {icon}
-            <Text bold color={palette.fg}>
+            <Text bold color={palette.fg} backgroundColor={palette.bg}>
               {' '}
               {run.name}
             </Text>
-            <Text color={palette.muted}> · {run.description}</Text>
+            <Text color={palette.muted} backgroundColor={palette.bg}>
+              {' '}
+              · {run.description}
+            </Text>
             {run.activity ? (
-              <Text dimColor> — {run.activity}</Text>
+              <Text color={palette.muted} backgroundColor={palette.bg}>
+                {' '}
+                — {run.activity}
+              </Text>
             ) : null}
           </Box>
         );

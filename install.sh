@@ -6,6 +6,7 @@
 #
 # Environment variables:
 #   CORTEX_HOME          Install directory           (default: ~/.cortex)
+#   CORTEX_STORAGE_DIR   Local storage partition dir (default: ~/.cortex/storage)
 #   CORTEX_BIN_DIR       Where to link `cortex`      (default: ~/.local/bin)
 #   CORTEX_VERSION       Release tag to install      (default: latest)
 #   CORTEX_REPO          GitHub owner/repo           (default: Ashish-Karmakar-coding/cortex)
@@ -15,6 +16,7 @@ set -euo pipefail
 
 REPO="${CORTEX_REPO:-Ashish-Karmakar-coding/cortex}"
 CORTEX_HOME="${CORTEX_HOME:-$HOME/.cortex}"
+CORTEX_STORAGE_DIR="${CORTEX_STORAGE_DIR:-$CORTEX_HOME/storage}"
 VERSION="${CORTEX_VERSION:-latest}"
 
 cyan() { printf '\033[36m%s\033[0m\n' "$*"; }
@@ -91,6 +93,11 @@ EOF
 
 chmod 755 "$LAUNCHER" "$CORTEX_HOME/bin/cortex.js"
 
+# --- Local Storage Partition ------------------------------------------------
+
+CORTEX_HOME="$CORTEX_HOME" node --disable-warning=ExperimentalWarning \
+  "$CORTEX_HOME/bin/cortex.js" init-storage --storage-dir "$CORTEX_STORAGE_DIR" >/dev/null 2>&1 || true
+
 # --- PATH -------------------------------------------------------------------
 
 if [ -n "${CORTEX_NO_MODIFY_PATH:-}" ]; then
@@ -133,8 +140,9 @@ fi
 
 INSTALLED_VERSION="$(node "$CORTEX_HOME/bin/cortex.js" --version 2>/dev/null || echo "unknown")"
 green "Cortex $INSTALLED_VERSION installed."
-echo "  Binary : $BIN_DIR/cortex"
-echo "  Data   : $CORTEX_HOME"
+echo "  Binary  : $BIN_DIR/cortex"
+echo "  Config  : $CORTEX_HOME"
+echo "  Storage : $CORTEX_STORAGE_DIR"
 echo
 
 case ":$PATH:" in

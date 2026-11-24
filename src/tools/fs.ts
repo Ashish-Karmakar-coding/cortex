@@ -1,10 +1,36 @@
 import { tool } from 'ai';
 import { z } from 'zod';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createPatch } from 'diff';
 
 const MAX_READ_LINES = 500;
+
+export interface FileSnapshot {
+  path: string;
+  existedBefore: boolean;
+  previousContent: string | null;
+}
+
+export function captureFileSnapshot(targetPath: string): FileSnapshot {
+  const resolved = resolve(targetPath);
+  if (!existsSync(resolved)) {
+    return { path: resolved, existedBefore: false, previousContent: null };
+  }
+  try {
+    const stat = statSync(resolved);
+    if (!stat.isFile() || stat.size > 2_000_000) {
+      return { path: resolved, existedBefore: true, previousContent: null };
+    }
+    return {
+      path: resolved,
+      existedBefore: true,
+      previousContent: readFileSync(resolved, 'utf-8'),
+    };
+  } catch {
+    return { path: resolved, existedBefore: true, previousContent: null };
+  }
+}
 
 export const readFileTool = tool({
   description:
@@ -26,9 +52,23 @@ export const readFileTool = tool({
       return `Error: File not found: ${resolvedPath}`;
     }
     try {
-      const content = readFileSync(resolvedPath, 'utf-8');
+      const stat = statSync(resolvedPath);
+      if (stat.isDirectory()) {
+        const entries = readdirSync(resolvedPath, { withFileTypes: true })
+          .slice(0, 100)
+          .map((e) => `${e.name}${e.isDirectory() ? '/' : ''}`);
+        return `Directory listing for ${resolvedPath}:\n${entries.join('\n') || '(empty)'}`;
+      }
+
+      const buf = readFileSync(resolvedPath);
+      // Simple binary guard: null byte in initial slice
+      if (buf.subarray(0, 4096).includes(0)) {
+        return `Error: Cannot display binary file (${buf.length} bytes): ${resolvedPath}`;
+      }
+
+      const content = buf.toString('utf-8');
       const allLines = content.split('\n');
-      const start = (start_line ?? 1) - 1;
+      const start = Math.max(0, (start_line ?? 1) - 1);
       const end = end_line ?? allLines.length;
       let lines = allLines.slice(start, end);
 
@@ -76,6 +116,7 @@ export const writeFileTool = tool({
 
 function normalizeWhitespace(s: string): string {
   return s
+    .replace(/\r\n/g, '\n')
     .split('\n')
     .map((line) => line.trimEnd())
     .join('\n')
@@ -101,19 +142,19 @@ export const editFileTool = tool({
 
     try {
       const originalContent = readFileSync(resolvedPath, 'utf-8');
+      const usesCrlf = originalContent.includes('\r\n');
+      const lfOriginal = originalContent.replace(/\r\n/g, '\n');
+      const lfSearch = search_block.replace(/\r\n/g, '\n');
+      const lfReplace = replace_block.replace(/\r\n/g, '\n');
 
-      // Try exact match first
+      // 1. Try exact match first (preserving original line endings)
       const exactMatches = originalContent.split(search_block).length - 1;
-
       if (exactMatches === 1) {
-        // Exact single match — apply
         const newContent = originalContent.replace(search_block, replace_block);
         const diff = createPatch(resolvedPath, originalContent, newContent, 'original', 'modified');
-        // Write the file
         writeFileSync(resolvedPath, newContent, 'utf-8');
         return JSON.stringify({ diff, applied: true });
       }
-
       if (exactMatches > 1) {
         return JSON.stringify({
           error: `search_block matches ${exactMatches} locations. Include more surrounding context lines to make the match unique.`,
@@ -121,9 +162,25 @@ export const editFileTool = tool({
         });
       }
 
-      // No exact match — try whitespace-normalized fallback
-      const normalizedSearch = normalizeWhitespace(search_block);
-      const lines = originalContent.split('\n');
+      // 2. Try LF-normalized exact match (handles Windows CRLF files edited with LF blocks)
+      const lfMatches = lfOriginal.split(lfSearch).length - 1;
+      if (lfMatches === 1) {
+        const replacedLf = lfOriginal.replace(lfSearch, lfReplace);
+        const newContent = usesCrlf ? replacedLf.replace(/\n/g, '\r\n') : replacedLf;
+        const diff = createPatch(resolvedPath, originalContent, newContent, 'original', 'modified');
+        writeFileSync(resolvedPath, newContent, 'utf-8');
+        return JSON.stringify({ diff, applied: true });
+      }
+      if (lfMatches > 1) {
+        return JSON.stringify({
+          error: `search_block matches ${lfMatches} locations. Include more surrounding context lines to make the match unique.`,
+          applied: false,
+        });
+      }
+
+      // 3. Try whitespace-normalized fallback
+      const normalizedSearch = normalizeWhitespace(lfSearch);
+      const lines = lfOriginal.split('\n');
       const searchLines = normalizedSearch.split('\n');
       let matchStart = -1;
       let matchCount = 0;
@@ -143,7 +200,7 @@ export const editFileTool = tool({
       if (matchCount === 0) {
         return JSON.stringify({
           error:
-            'search_block not found in file (even with whitespace normalization). Verify the content matches the file exactly.',
+            'search_block not found in file (even with line-ending and whitespace normalization). Verify the content matches the file exactly.',
           applied: false,
         });
       }
@@ -155,10 +212,10 @@ export const editFileTool = tool({
         });
       }
 
-      // Single whitespace-normalized match
       const beforeLines = lines.slice(0, matchStart);
       const afterLines = lines.slice(matchStart + searchLines.length);
-      const newContent = [...beforeLines, replace_block, ...afterLines].join('\n');
+      const replacedLf = [...beforeLines, lfReplace, ...afterLines].join('\n');
+      const newContent = usesCrlf ? replacedLf.replace(/\n/g, '\r\n') : replacedLf;
       const diff = createPatch(resolvedPath, originalContent, newContent, 'original', 'modified');
       writeFileSync(resolvedPath, newContent, 'utf-8');
       return JSON.stringify({ diff, applied: true });

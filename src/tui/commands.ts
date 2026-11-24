@@ -33,8 +33,30 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     args: '<provider> <key>',
   },
   {
+    name: 'auto',
+    description: 'Toggle auto-approve for tool calls',
+  },
+  {
+    name: 'plan',
+    description: 'Toggle read-only Plan mode',
+  },
+  {
     name: 'compact',
     description: 'Compress the conversation context',
+  },
+  {
+    name: 'context',
+    description: 'Show token usage and context window details',
+  },
+  {
+    name: 'diff',
+    description: 'Show current git status and working tree diff',
+  },
+  {
+    name: 'rewind',
+    description: 'Undo file edits from recent checkpoints',
+    args: '[checkpoint-id]',
+    aliases: ['undo'],
   },
   {
     name: 'sessions',
@@ -58,8 +80,31 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: 'Analyze the repo and create CORTEX.md',
   },
   {
+    name: 'memory',
+    description: 'View or add persistent user/project memory',
+    args: '[add <key>=<note>]',
+  },
+  {
     name: 'agents',
     description: 'List available subagents and their tools',
+  },
+  {
+    name: 'mcp',
+    description: 'Inspect or reload configured MCP servers',
+    args: '[reload]',
+  },
+  {
+    name: 'storage',
+    description: 'Show local storage partition stats and path',
+  },
+  {
+    name: 'config',
+    description: 'View or update config (numCtx, baseUrl, storageDir)',
+    args: '[key value]',
+  },
+  {
+    name: 'permissions',
+    description: 'Show active permission mode and allow/deny rules',
   },
   {
     name: 'status',
@@ -67,15 +112,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   {
     name: 'doctor',
-    description: 'Check Node, providers, and configuration',
+    description: 'Check Node, storage, providers, and configuration',
   },
   {
     name: 'export',
     description: 'Export this conversation to Markdown',
-  },
-  {
-    name: 'auto',
-    description: 'Toggle auto-approve for tool calls',
   },
   {
     name: 'quit',

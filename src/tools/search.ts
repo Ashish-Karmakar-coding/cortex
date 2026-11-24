@@ -1,6 +1,6 @@
 import { tool } from 'ai';
 import { z } from 'zod';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve, join, relative } from 'node:path';
 import fg from 'fast-glob';
@@ -98,14 +98,16 @@ function jsGrep(
       } else if (stat.isFile()) {
         if (include) {
           const includeRegex = new RegExp(
-            include.replace(/\*/g, '.*').replace(/\?/g, '.'),
+            '^' + include.replace(/\./g, '\\.').replace(/\*/g, '.*').replace(/\?/g, '.') + '$',
             'i'
           );
           if (!includeRegex.test(entry)) continue;
         }
 
         try {
-          const content = readFileSync(fullPath, 'utf-8');
+          const buf = readFileSync(fullPath);
+          if (buf.subarray(0, 2048).includes(0)) continue;
+          const content = buf.toString('utf-8');
           const lines = content.split('\n');
           for (let i = 0; i < lines.length; i++) {
             if (regex.test(lines[i]!)) {
@@ -121,7 +123,19 @@ function jsGrep(
     }
   }
 
-  walk(basePath);
+  const stat = statSync(basePath);
+  if (stat.isFile()) {
+    const content = readFileSync(basePath, 'utf-8');
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (regex.test(lines[i]!)) {
+        results.push(`${basePath}:${i + 1}: ${lines[i]!.trim()}`);
+        if (results.length >= MAX_GREP_LINES) break;
+      }
+    }
+  } else {
+    walk(basePath);
+  }
   return results;
 }
 
@@ -133,7 +147,7 @@ export const grepSearchTool = tool({
     path: z
       .string()
       .optional()
-      .describe('Directory to search in. Defaults to current directory.'),
+      .describe('Directory or file to search in. Defaults to current directory.'),
     include: z
       .string()
       .optional()
@@ -142,34 +156,44 @@ export const grepSearchTool = tool({
   execute: async ({ pattern, path, include }) => {
     const searchPath = path ? resolve(path) : process.cwd();
 
-    // Try ripgrep first
+    // Try ripgrep safely via execFileSync (no shell quoting bugs or stderr spam)
     try {
-      const args = ['rg', '--line-number', '--no-heading', '--color=never'];
+      const args = ['--line-number', '--no-heading', '--color=never'];
       if (include) {
         args.push(`--glob=${include}`);
       }
       for (const ig of DEFAULT_IGNORE) {
         args.push(`--glob=!${ig}`);
       }
-      args.push(pattern, searchPath);
+      args.push('--', pattern, searchPath);
 
-      const output = execSync(args.join(' '), {
+      const output = execFileSync('rg', args, {
         encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024,
-        timeout: 30000,
+        timeout: 30_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
 
-      const lines = output.trim().split('\n');
+      const lines = output.trim().split('\n').filter(Boolean);
+      if (lines.length === 0) return 'No matches found.';
       if (lines.length > MAX_GREP_LINES) {
-        const kept = [...lines.slice(0, 50), `\n[... ${lines.length - 250} lines truncated ...]`, ...lines.slice(-200)];
+        const kept = [
+          ...lines.slice(0, 50),
+          `\n[... ${lines.length - 250} lines truncated ...]`,
+          ...lines.slice(-200),
+        ];
         return kept.join('\n');
       }
       return output.trim() || 'No matches found.';
-    } catch {
-      // ripgrep not available or failed — use JS fallback
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      // rg exits 1 when there are simply no matches
+      if (status === 1) {
+        return 'No matches found.';
+      }
+      // Fall back to JS grep when rg is missing (ENOENT) or unsupported regex
     }
 
-    // JS fallback
     try {
       const results = jsGrep(pattern, searchPath, include);
       if (results.length === 0) {

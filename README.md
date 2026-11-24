@@ -41,6 +41,7 @@ curl.exe -fsSL https://raw.githubusercontent.com/Ashish-Karmakar-coding/cortex/m
 
 - Downloads the latest **self-contained release** from GitHub Releases (a single bundled `cortex.js` — no `npm install` of dependencies).
 - Installs it to `~/.cortex` (override with `CORTEX_HOME`).
+- **Creates and initializes the dedicated local storage partition** (`~/.cortex/storage` by default, or `CORTEX_STORAGE_DIR`) with `cortex.db` (sessions, file checkpoints for `/rewind`, persistent memory, prompt history, tool audit log, and model capability cache), `storage-manifest.json`, `backups/`, `logs/`, `cache/`, and `mcp.json`.
 - Adds a `cortex` launcher to `~/.local/bin` (Unix) or `~/.cortex\bin` on your user `PATH` (Windows).
 - Verifies Node.js 22.13+ is present.
 
@@ -56,7 +57,8 @@ cortex
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CORTEX_HOME` | `~/.cortex` | Install directory and config/data directory |
+| `CORTEX_HOME` | `~/.cortex` | Install directory and config directory |
+| `CORTEX_STORAGE_DIR` | `~/.cortex/storage` | Dedicated local storage partition directory |
 | `CORTEX_BIN_DIR` | `~/.local/bin` | Where the `cortex` launcher is linked (Unix) |
 | `CORTEX_VERSION` | `latest` | Install a specific release tag (e.g. `v0.1.0`) |
 | `CORTEX_REPO` | `Ashish-Karmakar-coding/cortex` | Repo to download releases from |
@@ -182,13 +184,15 @@ Keyboard shortcuts:
 | `Enter` | Send the prompt or run the selected slash command |
 | `\` + `Enter` | Insert a newline |
 | `↑` / `↓` | Prompt history, or navigate the `/` palette |
-| `Tab` | Complete a slash command |
-| `Shift+Tab` | Toggle auto-approve for tool calls |
+| `Tab` | Complete a slash command or `@file` mention |
+| `Shift+Tab` | Cycle mode: manual → auto-approve → plan (read-only) |
+| `@path/to/file` | Attach local file contents directly into the prompt |
+| `!command` | Run a shell command directly |
 | `Ctrl+C` | Interrupt the agent; press twice when idle to exit |
 
-Type `/` to open a filterable command palette (Claude Code style). While a response is streaming, typing keeps the prompt responsive and queues your next message.
+Type `/` to open a filterable command palette (Claude Code style), or `@` to autocomplete project files. While a response is streaming, typing keeps the prompt responsive and queues your next message.
 
-Cortex uses a dark-green / warm-beige palette: **`#2C3930` background** with **`#DCD7C9` elements**. The TUI asks your terminal to adopt the colors (OSC 10/11/12) and restores your original theme on exit. To customize, edit `src/tui/palette.ts`.
+Cortex uses a **solid, non-transparent** dark-green / warm-beige surface: **`#2C3930` background** with **`#DCD7C9` elements**. Every rendered cell, border, panel, and row edge is painted solidly in `#2C3930` alongside OSC 10/11/12 terminal theming (restored on exit). To customize, edit `src/tui/palette.ts`.
 
 ### Non-interactive / pipe mode
 
@@ -221,18 +225,27 @@ cortex -p "run the tests and fix any failures" --yes
 | Command | Description |
 | --- | --- |
 | `/help` | Show all commands and shortcuts |
-| `/model` | List/select a model (auto-discovers Ollama models) |
+| `/model` | List/select a model (auto-discovers Ollama/LM Studio models & tool capabilities) |
 | `/provider` | Switch provider |
 | `/key <provider> <key>` | Save an API key |
+| `/auto` | Toggle auto-approve for tool calls |
+| `/plan` | Toggle read-only Plan mode |
 | `/compact` | Summarise and shrink the conversation |
+| `/context` | Show token usage and context window details |
+| `/diff` | View current git status and working tree diff |
+| `/rewind [id]` | Undo file edits from recent checkpoints (`/undo`) |
 | `/sessions` | List saved sessions |
 | `/resume [id]` | Resume a session (picker if no id) |
 | `/new`, `/clear` | Start a fresh conversation |
 | `/init` | Generate `CORTEX.md` with project commands and layout |
-| `/status` | Show model, context, session, and approval state |
-| `/doctor` | Check Node, config, session DB, and provider connectivity |
+| `/memory [add k=v]` | View or add persistent user/project memory |
+| `/mcp [reload]` | Inspect or reload configured MCP servers |
+| `/storage` | Show local storage partition location and stats |
+| `/config [k v]` | View or update settings (`numCtx`, `baseUrl`, `storageDir`) |
+| `/permissions` | View active permission mode and allow/deny rules |
+| `/status` | Show model, context, session, storage, and mode state |
+| `/doctor` | Check Node, config, local storage DB, and provider connectivity |
 | `/export` | Export the conversation to Markdown |
-| `/auto` | Toggle auto-approve for tool calls |
 | `/agents` | List built-in and custom subagents |
 | `/quit` | Exit Cortex |
 
@@ -278,25 +291,33 @@ cortex --resume <session-id>
 ## How it works
 
 - **ReAct agent loop** with up to 25 tool iterations per request, streaming output, and abort support.
-- **Tools:** `read_file` (line ranges), `write_file`, `edit_file` (surgical SEARCH/REPLACE blocks with unified diffs), `glob_files`, `grep_search` (ripgrep with JS fallback), `bash_exec` (timeouts, output truncation, dangerous-command blocking), `task` (subagent delegation).
-- **Human-in-the-loop safety:** read-only tools run automatically; file writes, edits, shell commands, and subagent delegation show a colour-coded diff/command/task preview and ask `[y] once / [a] session / [n] reject`. Shift+Tab or `/auto` toggles auto-approve.
-- **Small-model friendly:** models without native tool calling get an XML `<tool_call>` fallback parser, so local 7B models still work.
-- **Context management:** token estimation and automatic conversation compaction at ~75% of the model's context window. The system prompt (git state + repo tree) is built once per turn instead of once per tool iteration, so the TUI stays responsive.
-- **Smooth TUI:** completed turns are printed once with Ink `<Static>`; streamed text is buffered to ~20 updates/second; the input owns its own state so typing never repaints the transcript. Responses typed during streaming are queued.
-- **MCP support:** connect external tool servers over stdio or Streamable HTTP.
+- **Tools:** `read_file` (line ranges), `write_file`, `edit_file` (surgical SEARCH/REPLACE blocks with CRLF/LF normalization & unified diffs), `glob_files`, `grep_search` (ripgrep with JS fallback), `git_status`, `git_diff`, `git_log`, `todo_write`, `web_fetch`, `bash_exec` (timeouts, output truncation, dangerous-command blocking), `task` (subagent delegation), plus MCP tools.
+- **Hybrid Local LLM Tool Calling:** Uses a native Ollama `/api/chat` streaming adapter with `/api/show` capability detection (`tools` + `context_length`), OpenAI-compatible tool calling for LM Studio / vLLM / llama.cpp, automatic downgrade on `"does not support tools"` errors, and a multi-format fallback parser (`<tool_call>`, Qwen `<function=...>`, pretty JSON blocks, and parameter alias normalization).
+- **Human-in-the-loop safety:** read-only tools run automatically; file writes, edits, shell commands, web fetches, and subagent delegation show a preview and ask `[y] once / [a] session / [n] reject`. `Shift+Tab` cycles `manual → auto-approve → plan (read-only)`. File edits automatically record checkpoints for `/rewind`.
+- **Context management:** token estimation and automatic conversation compaction at ~75% of the model's context window. The system prompt (git state + repo tree + global/project `CORTEX.md` + local memory) is built once per turn instead of once per tool iteration.
+- **Solid TUI:** completed turns are printed once with Ink `<Static>`; streamed text is buffered to ~20 updates/second; every line and panel is painted solidly in `#2C3930` without transparent gaps.
+- **MCP support:** connect external tool servers over stdio or Streamable HTTP via `~/.cortex/mcp.json` or `.cortex/mcp.json`.
 
-### Configuration files
+### Configuration & local storage partition
 
-All state lives in `~/.cortex` (or `$CORTEX_HOME`):
+All configuration and the default local storage partition live in `~/.cortex` (or `$CORTEX_HOME` / `$CORTEX_STORAGE_DIR`):
 
 ```
 ~/.cortex/
-├── bin/cortex.js        # installed bundle
-├── config.json          # active provider/model, keys, endpoints
-├── sessions.db          # SQLite session history
-├── mcp.json             # optional MCP servers
-└── agents/              # optional user-level subagents (*.md)
+├── bin/cortex.js              # installed bundle
+├── config.json                # active provider/model, keys, endpoints, storageDir
+├── mcp.json                   # MCP servers
+├── CORTEX.md                  # optional global instructions
+├── agents/                    # optional user-level subagents (*.md)
+└── storage/                   # local storage partition (created during install)
+    ├── storage-manifest.json  # partition ID & schema metadata
+    ├── cortex.db              # SQLite DB (sessions, checkpoints, memory, history, audit logs, model cache)
+    ├── backups/
+    ├── logs/
+    └── cache/
 ```
+
+Run `cortex init-storage [--storage-dir <path>]` to create/relocate the storage partition, or `cortex storage` to inspect its usage.
 
 Project-level subagents live in `.cortex/agents/` and project instructions in `CORTEX.md`.
 

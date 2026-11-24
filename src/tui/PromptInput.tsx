@@ -3,6 +3,7 @@ import { Box, Text, useInput } from 'ink';
 import stringWidth from 'string-width';
 import { palette } from './palette.js';
 import { filterSlashCommands, type SlashCommand } from './commands.js';
+import { listProjectFiles } from '../agent/mentions.js';
 
 export interface PromptInputProps {
   onSubmit: (value: string) => void;
@@ -10,6 +11,8 @@ export interface PromptInputProps {
   placeholder?: string;
   /** Shown on the right side of the prompt border, e.g. the active model. */
   hint?: string;
+  /** Initial prompt history loaded from local storage. */
+  initialHistory?: string[];
 }
 
 const MAX_VISIBLE = 8;
@@ -61,7 +64,7 @@ const SlashMenu: React.FC<SlashMenuProps> = ({ items, selectedIndex, query }) =>
         const itemIndex = start + index;
         const selected = itemIndex === selectedIndex;
         const label = `  /${command.name}${command.args ? ` ${command.args}` : ''}`;
-        const gap = Math.max(2, 24 - stringWidth(label));
+        const gap = Math.max(2, 26 - stringWidth(label));
         const line = truncateTo(
           `${label}${' '.repeat(gap)}${command.description}`,
           width
@@ -91,45 +94,114 @@ const SlashMenu: React.FC<SlashMenuProps> = ({ items, selectedIndex, query }) =>
   );
 };
 
+interface MentionMenuProps {
+  files: string[];
+  selectedIndex: number;
+  query: string;
+}
+
+const MentionMenu: React.FC<MentionMenuProps> = ({ files, selectedIndex, query }) => {
+  const columns = process.stdout.columns ?? 80;
+  const width = Math.max(24, Math.min(columns - 2, 84));
+  const start = Math.max(
+    0,
+    Math.min(selectedIndex - Math.floor(MAX_VISIBLE / 2), files.length - MAX_VISIBLE)
+  );
+  const visible = files.slice(start, start + MAX_VISIBLE);
+
+  return (
+    <Box flexDirection="column">
+      <Text backgroundColor={palette.bg} color={palette.muted}>
+        {padTo(
+          `  @${query}  ·  ↑↓ navigate  ·  Tab/Enter attach file`,
+          width
+        )}
+      </Text>
+      {visible.map((file, index) => {
+        const itemIndex = start + index;
+        const selected = itemIndex === selectedIndex;
+        const line = truncateTo(`  @${file}`, width);
+        return (
+          <Text
+            key={file}
+            backgroundColor={selected ? palette.fg : palette.bg}
+            color={selected ? palette.bg : palette.fg}
+            bold={selected}
+          >
+            {padTo(line, width)}
+          </Text>
+        );
+      })}
+    </Box>
+  );
+};
+
 export const PromptInput: React.FC<PromptInputProps> = ({
   onSubmit,
   disabled = false,
   placeholder = '',
   hint,
+  initialHistory = [],
 }) => {
   const [value, setValue] = useState('');
   const [cursor, setCursor] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [projectFiles, setProjectFiles] = useState<string[]>([]);
 
-  const historyRef = useRef<string[]>([]);
+  const historyRef = useRef<string[]>(initialHistory.slice(-100));
   const historyIndexRef = useRef<number | null>(null);
   const draftRef = useRef('');
+
+  useEffect(() => {
+    setProjectFiles(listProjectFiles());
+  }, []);
 
   const query =
     value.startsWith('/') && !value.includes(' ') && !value.includes('\n')
       ? value.slice(1)
       : null;
-  const matches = useMemo(
+
+  const mentionMatch = useMemo(() => {
+    if (query !== null) return null;
+    const beforeCursor = value.slice(0, cursor);
+    const m = /(?:^|\s)@([A-Za-z0-9_./\\-]*)$/.exec(beforeCursor);
+    return m ? m[1]! : null;
+  }, [value, cursor, query]);
+
+  const slashMatches = useMemo(
     () => (query === null ? [] : filterSlashCommands(query)),
     [query]
   );
-  const menuOpen = !disabled && query !== null && !dismissed && matches.length > 0;
+
+  const mentionMatches = useMemo(() => {
+    if (mentionMatch === null) return [];
+    const q = mentionMatch.toLowerCase();
+    if (!q) return projectFiles.slice(0, MAX_VISIBLE);
+    return projectFiles
+      .filter((file) => file.toLowerCase().includes(q))
+      .slice(0, MAX_VISIBLE);
+  }, [mentionMatch, projectFiles]);
+
+  const slashOpen = !disabled && query !== null && !dismissed && slashMatches.length > 0;
+  const mentionOpen =
+    !disabled && !slashOpen && mentionMatch !== null && !dismissed && mentionMatches.length > 0;
 
   useEffect(() => {
     setCursor((current) => Math.min(current, value.length));
   }, [value.length]);
 
   useEffect(() => {
-    if (selectedIndex >= matches.length) {
-      setSelectedIndex(Math.max(0, matches.length - 1));
+    const len = slashOpen ? slashMatches.length : mentionMatches.length;
+    if (selectedIndex >= len) {
+      setSelectedIndex(Math.max(0, len - 1));
     }
-  }, [matches.length, selectedIndex]);
+  }, [slashOpen, slashMatches.length, mentionMatches.length, selectedIndex]);
 
   useEffect(() => {
     setDismissed(false);
     setSelectedIndex(0);
-  }, [query]);
+  }, [query, mentionMatch]);
 
   const replaceValue = (next: string, nextCursor = next.length) => {
     setValue(next);
@@ -159,30 +231,60 @@ export const PromptInput: React.FC<PromptInputProps> = ({
     setDismissed(true);
   };
 
+  const completeMention = (file: string) => {
+    const beforeCursor = value.slice(0, cursor);
+    const afterCursor = value.slice(cursor);
+    const replaced = beforeCursor.replace(/@[A-Za-z0-9_./\\-]*$/, `@${file} `);
+    const next = `${replaced}${afterCursor}`;
+    setValue(next);
+    setCursor(replaced.length);
+    setDismissed(true);
+  };
+
   useInput(
     (input, key) => {
-      if (menuOpen) {
+      if (slashOpen) {
         if (key.upArrow) {
-          setSelectedIndex((current) => (current - 1 + matches.length) % matches.length);
+          setSelectedIndex((current) => (current - 1 + slashMatches.length) % slashMatches.length);
           return;
         }
         if (key.downArrow) {
-          setSelectedIndex((current) => (current + 1) % matches.length);
+          setSelectedIndex((current) => (current + 1) % slashMatches.length);
           return;
         }
         if (key.tab) {
-          const command = matches[selectedIndex];
+          const command = slashMatches[selectedIndex];
           if (command) completeCommand(command);
           return;
         }
         if (key.return) {
-          const command = matches[selectedIndex];
+          const command = slashMatches[selectedIndex];
           if (!command) return;
           if (command.args) {
             completeCommand(command);
           } else {
             submit(`/${command.name}`);
           }
+          return;
+        }
+        if (key.escape) {
+          setDismissed(true);
+          return;
+        }
+      } else if (mentionOpen) {
+        if (key.upArrow) {
+          setSelectedIndex(
+            (current) => (current - 1 + mentionMatches.length) % mentionMatches.length
+          );
+          return;
+        }
+        if (key.downArrow) {
+          setSelectedIndex((current) => (current + 1) % mentionMatches.length);
+          return;
+        }
+        if (key.tab || key.return) {
+          const file = mentionMatches[selectedIndex];
+          if (file) completeMention(file);
           return;
         }
         if (key.escape) {
@@ -198,7 +300,6 @@ export const PromptInput: React.FC<PromptInputProps> = ({
           return;
         }
 
-        // Prompt history (up/down) when the command palette is closed.
         if (key.upArrow || key.downArrow) {
           const history = historyRef.current;
           if (history.length === 0) return;
@@ -226,7 +327,6 @@ export const PromptInput: React.FC<PromptInputProps> = ({
         }
 
         if (key.return) {
-          // A trailing backslash turns Enter into a soft newline.
           if (value.endsWith('\\')) {
             const next = value.slice(0, -1) + '\n';
             replaceValue(next, next.length);
@@ -267,7 +367,6 @@ export const PromptInput: React.FC<PromptInputProps> = ({
         return;
       }
 
-      // Ignore shortcuts and escape sequences; insert printable/pasted text.
       if (key.ctrl || key.meta || !input) return;
       const pasted = input.replace(/\r/g, '');
       if (!pasted) return;
@@ -283,25 +382,37 @@ export const PromptInput: React.FC<PromptInputProps> = ({
   const before = value.slice(0, cursor);
   const atCursor = value.slice(cursor, cursor + 1);
   const after = value.slice(cursor + 1);
+  const isShellPrefix = value.startsWith('!');
 
   return (
     <>
-      {menuOpen && (
-        <SlashMenu items={matches} selectedIndex={selectedIndex} query={query ?? ''} />
+      {slashOpen && (
+        <SlashMenu items={slashMatches} selectedIndex={selectedIndex} query={query ?? ''} />
+      )}
+      {mentionOpen && (
+        <MentionMenu
+          files={mentionMatches}
+          selectedIndex={selectedIndex}
+          query={mentionMatch ?? ''}
+        />
       )}
 
       <Box
         borderStyle="round"
-        borderColor={palette.fg}
+        borderColor={isShellPrefix ? palette.warning : palette.fg}
         paddingX={1}
         marginTop={1}
       >
         <Box flexGrow={1}>
-          <Text bold color={palette.fg} backgroundColor={palette.bg}>
-            ❯{' '}
+          <Text
+            bold
+            color={isShellPrefix ? palette.warning : palette.fg}
+            backgroundColor={palette.bg}
+          >
+            {isShellPrefix ? '! ' : '❯ '}
           </Text>
           {value.length === 0 ? (
-            <Text dimColor backgroundColor={palette.bg}>
+            <Text color={palette.muted} backgroundColor={palette.bg}>
               {placeholder}
             </Text>
           ) : null}
@@ -329,7 +440,7 @@ export const PromptInput: React.FC<PromptInputProps> = ({
           )}
         </Box>
         {hint ? (
-          <Text dimColor backgroundColor={palette.bg}>
+          <Text color={palette.muted} backgroundColor={palette.bg}>
             {hint}
           </Text>
         ) : null}

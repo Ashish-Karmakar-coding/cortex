@@ -1,4 +1,5 @@
 import type { Config } from './store.js';
+import type { LocalStore } from '../storage/localStore.js';
 
 export type Provider = 'ollama' | 'lmstudio' | 'openai' | 'anthropic' | 'google' | 'groq' | 'openrouter';
 
@@ -30,8 +31,40 @@ export const CURATED_MODELS: ModelInfo[] = [
   { id: 'deepseek/deepseek-chat', name: 'DeepSeek V3 (OpenRouter)', provider: 'openrouter', contextWindow: 65536, supportsToolCalling: true },
 ];
 
+const TOOL_CAPABLE_LOCAL_PATTERNS: RegExp[] = [
+  /qwen2\.5/i,
+  /qwen3/i,
+  /qwq/i,
+  /llama3\.[123]/i,
+  /llama-3\.[123]/i,
+  /mistral/i,
+  /ministral/i,
+  /devstral/i,
+  /mixtral/i,
+  /command-r/i,
+  /deepseek-v3/i,
+  /deepseek-r1/i,
+  /granite3/i,
+  /hermes/i,
+  /firefunction/i,
+  /nemotron/i,
+  /gpt-oss/i,
+  /gemma3/i,
+  /phi4/i,
+  /cogito/i,
+  /olmo2/i,
+];
+
+export function inferLocalToolCallingSupport(modelId: string): boolean {
+  return TOOL_CAPABLE_LOCAL_PATTERNS.some((pattern) => pattern.test(modelId));
+}
+
+function normalizeOllamaBase(host?: string): string {
+  return (host ?? 'http://localhost:11434').trim().replace(/\/+$/, '').replace(/\/(api|v1)$/, '');
+}
+
 interface OllamaTagsResponse {
-  models: Array<{
+  models?: Array<{
     name: string;
     size: number;
     details?: {
@@ -41,23 +74,130 @@ interface OllamaTagsResponse {
   }>;
 }
 
-export async function fetchOllamaModels(host?: string): Promise<ModelInfo[]> {
-  const baseUrl = host ?? 'http://localhost:11434';
+interface OllamaShowResponse {
+  capabilities?: string[];
+  template?: string;
+  model_info?: Record<string, unknown>;
+}
+
+interface OpenAIModelsResponse {
+  data?: Array<{
+    id: string;
+  }>;
+}
+
+export async function inspectOllamaModel(
+  modelId: string,
+  host?: string,
+  store?: LocalStore
+): Promise<{ supportsToolCalling: boolean; contextWindow: number; capabilities: string[] }> {
+  const cached = store?.getCachedModelCapabilities('ollama', modelId);
+  if (cached) {
+    return {
+      supportsToolCalling: cached.supportsTools,
+      contextWindow: cached.contextWindow,
+      capabilities: cached.capabilities,
+    };
+  }
+
+  const baseUrl = normalizeOllamaBase(host);
+  let supportsTools = inferLocalToolCallingSupport(modelId);
+  let contextWindow = 16384;
+  let capabilities: string[] = [];
+
   try {
-    const response = await fetch(`${baseUrl}/api/tags`);
+    const response = await fetch(`${baseUrl}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelId }),
+      signal: AbortSignal.timeout(2500),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as OllamaShowResponse;
+      if (Array.isArray(data.capabilities) && data.capabilities.length > 0) {
+        capabilities = data.capabilities;
+        supportsTools = data.capabilities.includes('tools');
+      } else if (typeof data.template === 'string') {
+        const tmpl = data.template;
+        if (tmpl.includes('.Tools') || tmpl.includes('tool_call') || tmpl.includes('tools')) {
+          supportsTools = true;
+        }
+      }
+
+      if (data.model_info && typeof data.model_info === 'object') {
+        for (const [key, value] of Object.entries(data.model_info)) {
+          if (key.endsWith('.context_length') && typeof value === 'number' && value > 0) {
+            contextWindow = value;
+            break;
+          }
+        }
+      }
+
+      store?.setCachedModelCapabilities({
+        provider: 'ollama',
+        modelId,
+        supportsTools,
+        contextWindow,
+        capabilities,
+      });
+    }
+  } catch {
+    // Ollama unreachable or older API — rely on heuristic fallback
+  }
+
+  return {
+    supportsToolCalling: supportsTools,
+    contextWindow,
+    capabilities,
+  };
+}
+
+export async function fetchOllamaModels(host?: string): Promise<ModelInfo[]> {
+  const baseUrl = normalizeOllamaBase(host);
+  try {
+    const response = await fetch(`${baseUrl}/api/tags`, {
+      signal: AbortSignal.timeout(3000),
+    });
     if (!response.ok) {
       return [];
     }
     const data = (await response.json()) as OllamaTagsResponse;
-    return data.models.map((m) => ({
+    return (data.models ?? []).map((m) => ({
       id: m.name,
       name: m.name,
       provider: 'ollama' as Provider,
-      contextWindow: 16384, // Conservative default; actual depends on model config
-      supportsToolCalling: false, // Assume false; use XML fallback for safety
+      contextWindow: 16384,
+      supportsToolCalling: inferLocalToolCallingSupport(m.name),
     }));
   } catch {
-    // Ollama not running or unreachable
+    return [];
+  }
+}
+
+export async function fetchOpenAICompatibleModels(
+  provider: Provider,
+  baseUrl: string,
+  apiKey?: string
+): Promise<ModelInfo[]> {
+  const cleanBase = baseUrl.trim().replace(/\/+$/, '');
+  try {
+    const response = await fetch(`${cleanBase}/models`, {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const data = (await response.json()) as OpenAIModelsResponse;
+    return (data.data ?? []).map((m) => ({
+      id: m.id,
+      name: m.id,
+      provider,
+      contextWindow: 16384,
+      supportsToolCalling: true,
+    }));
+  } catch {
     return [];
   }
 }
@@ -69,14 +209,17 @@ export async function listAvailableModels(provider: Provider, config: Config): P
       return fetchOllamaModels(host);
     }
     case 'lmstudio': {
-      // LM Studio uses OpenAI-compatible API; models vary by user installation
+      const baseUrl = config.providers['lmstudio']?.baseUrl ?? 'http://localhost:1234/v1';
+      const apiKey = config.providers['lmstudio']?.apiKey;
+      const liveModels = await fetchOpenAICompatibleModels('lmstudio', baseUrl, apiKey);
+      if (liveModels.length > 0) return liveModels;
       return [
         {
           id: 'local-model',
           name: 'LM Studio Local Model',
           provider: 'lmstudio',
           contextWindow: 16384,
-          supportsToolCalling: false,
+          supportsToolCalling: true,
         },
       ];
     }
@@ -85,17 +228,53 @@ export async function listAvailableModels(provider: Provider, config: Config): P
   }
 }
 
-export function getModelInfo(modelId: string, provider: Provider): ModelInfo {
-  // Check curated models first
+export function getModelInfo(modelId: string, provider: Provider, numCtx?: number): ModelInfo {
   const curated = CURATED_MODELS.find((m) => m.id === modelId && m.provider === provider);
   if (curated) return curated;
 
-  // Default for unknown models (local models, custom model IDs)
+  if (provider === 'ollama') {
+    return {
+      id: modelId,
+      name: modelId,
+      provider,
+      contextWindow: numCtx ?? 16384,
+      supportsToolCalling: inferLocalToolCallingSupport(modelId),
+    };
+  }
+
+  if (provider === 'lmstudio') {
+    return {
+      id: modelId,
+      name: modelId,
+      provider,
+      contextWindow: numCtx ?? 16384,
+      supportsToolCalling: true,
+    };
+  }
+
   return {
     id: modelId,
     name: modelId,
     provider,
-    contextWindow: 16384,
-    supportsToolCalling: provider !== 'ollama' && provider !== 'lmstudio',
+    contextWindow: numCtx ?? 16384,
+    supportsToolCalling: true,
   };
+}
+
+export async function resolveModelInfo(
+  modelId: string,
+  provider: Provider,
+  config: Config,
+  store?: LocalStore
+): Promise<ModelInfo> {
+  const base = getModelInfo(modelId, provider, config.numCtx);
+  if (provider === 'ollama') {
+    const inspected = await inspectOllamaModel(modelId, config.providers['ollama']?.baseUrl, store);
+    return {
+      ...base,
+      supportsToolCalling: inspected.supportsToolCalling,
+      contextWindow: config.numCtx ? Math.min(config.numCtx, inspected.contextWindow) : inspected.contextWindow,
+    };
+  }
+  return base;
 }

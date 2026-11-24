@@ -14,6 +14,11 @@ export function estimateMessagesTokens(messages: CoreMessage[]): number {
       for (const part of msg.content) {
         if ('text' in part && typeof part.text === 'string') {
           total += estimateTokens(part.text);
+        } else if (part.type === 'tool-call') {
+          total += estimateTokens(part.toolName + JSON.stringify(part.args ?? {}));
+        } else if (part.type === 'tool-result') {
+          const val = typeof part.result === 'string' ? part.result : JSON.stringify(part.result ?? '');
+          total += estimateTokens(part.toolName + val);
         }
       }
     }
@@ -32,12 +37,10 @@ export async function compactMessages(
 ): Promise<CoreMessage[]> {
   if (messages.length <= 4) return messages;
 
-  // Keep the most recent 40% of messages verbatim
   const keepCount = Math.max(Math.ceil(messages.length * 0.4), 2);
   const oldMessages = messages.slice(0, messages.length - keepCount);
   const recentMessages = messages.slice(messages.length - keepCount);
 
-  // Build a summary of old messages
   const oldContent = oldMessages
     .map((msg) => {
       const role = msg.role;
@@ -66,7 +69,6 @@ export async function compactMessages(
     return [summaryMessage, ...recentMessages];
   } catch (err) {
     console.error('[compaction] Failed to summarize, dropping old messages:', err);
-    // Fallback: just keep recent messages with a note
     const fallbackMessage: CoreMessage = {
       role: 'assistant',
       content:

@@ -1,5 +1,6 @@
 import { tool } from 'ai';
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import type { SubagentDefinition, SubagentEvent } from '../agent/subagents.js';
 
 export interface TaskToolOptions {
@@ -8,7 +9,8 @@ export interface TaskToolOptions {
   run: (
     definition: SubagentDefinition,
     prompt: string,
-    onEvent: (event: SubagentEvent) => void
+    onEvent: (event: SubagentEvent) => void,
+    runId: string
   ) => Promise<string>;
   onEvent?: (event: SubagentEvent) => void;
 }
@@ -66,12 +68,13 @@ Guidelines:
         return 'Error: no subagents are configured.';
       }
 
+      const runId = randomUUID();
       const emit = (event: SubagentEvent) => {
-        options.onEvent?.(event);
+        options.onEvent?.({ ...event, runId: event.runId ?? runId });
       };
 
-      emit({ type: 'start', name: definition.name, description });
-      const report = await options.run(definition, prompt, emit);
+      emit({ type: 'start', runId, name: definition.name, description });
+      const report = await options.run(definition, prompt, emit, runId);
       const summary =
         report.length > MAX_SUMMARY_CHARS
           ? `${report.slice(0, MAX_SUMMARY_CHARS)}\n... (truncated)`

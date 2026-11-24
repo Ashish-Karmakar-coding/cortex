@@ -8,18 +8,18 @@ export { palette, applyTerminalTheme } from './palette.js';
 /** Selection pointer for ink-select-input lists. */
 export const ThemedIndicator: React.FC<IndicatorProps> = ({ isSelected }) => (
   <Box marginRight={1}>
-    <Text color={isSelected ? palette.fg : palette.muted}>
+    <Text color={isSelected ? palette.fg : palette.muted} backgroundColor={palette.bg}>
       {isSelected ? '❯' : ' '}
     </Text>
   </Box>
 );
 
-/** Selected item gets an inverted chip using only the two theme colors. */
+/** Selected item gets an inverted chip using only the two solid theme colors. */
 export const ThemedItem: React.FC<ItemProps> = ({ isSelected, label }) => (
   <Text
     bold={isSelected}
     color={isSelected ? palette.bg : palette.fg}
-    backgroundColor={isSelected ? palette.fg : undefined}
+    backgroundColor={isSelected ? palette.fg : palette.bg}
   >
     {label}
   </Text>

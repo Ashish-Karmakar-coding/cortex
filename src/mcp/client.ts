@@ -1,5 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { jsonSchema, tool, type Tool } from 'ai';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { getConfigDir } from '../config/store.js';
@@ -15,36 +16,82 @@ export interface MCPServerConfig {
 
 export interface MCPToolDefinition {
   name: string;
+  rawName: string;
   description: string;
   parameters: Record<string, unknown>;
   serverName: string;
 }
 
-export async function loadMCPConfig(): Promise<MCPServerConfig[]> {
-  const configPath = join(getConfigDir(), 'mcp.json');
-  if (!existsSync(configPath)) {
-    return [];
-  }
+interface RawMCPFile {
+  servers?: MCPServerConfig[];
+  mcpServers?: Record<
+    string,
+    {
+      transport?: 'stdio' | 'http';
+      command?: string;
+      args?: string[];
+      url?: string;
+      env?: Record<string, string>;
+    }
+  >;
+}
 
+function parseMCPFile(configPath: string): MCPServerConfig[] {
+  if (!existsSync(configPath)) return [];
   try {
     const raw = readFileSync(configPath, 'utf-8');
-    const config = JSON.parse(raw) as { servers?: MCPServerConfig[] };
-    return config.servers ?? [];
+    const parsed = JSON.parse(raw) as RawMCPFile;
+    const out: MCPServerConfig[] = [];
+
+    if (Array.isArray(parsed.servers)) {
+      out.push(...parsed.servers);
+    }
+
+    if (parsed.mcpServers && typeof parsed.mcpServers === 'object') {
+      for (const [name, entry] of Object.entries(parsed.mcpServers)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const transport: 'stdio' | 'http' =
+          entry.transport ?? (entry.url ? 'http' : 'stdio');
+        out.push({
+          name,
+          transport,
+          command: entry.command,
+          args: entry.args,
+          url: entry.url,
+          env: entry.env,
+        });
+      }
+    }
+
+    return out;
   } catch (err) {
-    console.error('[MCP] Failed to read mcp.json:', err);
+    console.error(`[MCP] Failed to read ${configPath}:`, err);
     return [];
   }
 }
 
+export async function loadMCPConfig(cwd = process.cwd()): Promise<MCPServerConfig[]> {
+  const byName = new Map<string, MCPServerConfig>();
+  for (const srv of parseMCPFile(join(getConfigDir(), 'mcp.json'))) {
+    byName.set(srv.name, srv);
+  }
+  for (const srv of parseMCPFile(join(cwd, '.cortex', 'mcp.json'))) {
+    byName.set(srv.name, srv);
+  }
+  return [...byName.values()];
+}
+
 export class MCPManager {
   private clients = new Map<string, Client>();
+  private cachedTools: MCPToolDefinition[] = [];
 
   async connect(configs: MCPServerConfig[]): Promise<void> {
+    this.cachedTools = [];
     for (const config of configs) {
       try {
         const client = new Client({
           name: 'cortex',
-          version: '0.1.0',
+          version: '0.2.0',
         });
 
         if (config.transport === 'stdio') {
@@ -57,6 +104,7 @@ export class MCPManager {
             command: config.command,
             args: config.args ?? [],
             env: { ...process.env, ...(config.env ?? {}) } as Record<string, string>,
+            stderr: 'ignore',
           });
 
           await client.connect(transport);
@@ -66,8 +114,6 @@ export class MCPManager {
             continue;
           }
 
-          // Streamable HTTP transport
-          // Note: Import dynamically since it may not be available in all versions
           try {
             const { StreamableHTTPClientTransport } = await import(
               '@modelcontextprotocol/sdk/client/streamableHttp.js'
@@ -84,11 +130,11 @@ export class MCPManager {
         }
 
         this.clients.set(config.name, client);
-        console.error(`[MCP] Connected to server: ${config.name}`);
       } catch (err) {
         console.error(`[MCP] Failed to connect to server "${config.name}":`, err);
       }
     }
+    this.cachedTools = await this.listTools();
   }
 
   async listTools(): Promise<MCPToolDefinition[]> {
@@ -97,11 +143,15 @@ export class MCPManager {
     for (const [serverName, client] of this.clients) {
       try {
         const response = await client.listTools();
-        for (const tool of response.tools) {
+        for (const t of response.tools) {
           allTools.push({
-            name: `${serverName}__${tool.name}`,
-            description: tool.description ?? '',
-            parameters: (tool.inputSchema as Record<string, unknown>) ?? {},
+            name: `${serverName}__${t.name}`,
+            rawName: t.name,
+            description: t.description ?? `MCP tool ${t.name} from ${serverName}`,
+            parameters: (t.inputSchema as Record<string, unknown>) ?? {
+              type: 'object',
+              properties: {},
+            },
             serverName,
           });
         }
@@ -110,7 +160,35 @@ export class MCPManager {
       }
     }
 
+    this.cachedTools = allTools;
     return allTools;
+  }
+
+  getTools(): MCPToolDefinition[] {
+    return this.cachedTools;
+  }
+
+  buildToolSet(): Record<string, Tool> {
+    const out: Record<string, Tool> = {};
+    for (const def of this.cachedTools) {
+      const schemaObj =
+        def.parameters && typeof def.parameters === 'object'
+          ? { type: 'object', properties: {}, ...def.parameters }
+          : { type: 'object', properties: {} };
+
+      out[def.name] = tool({
+        description: `[MCP:${def.serverName}] ${def.description}`,
+        parameters: jsonSchema(schemaObj as Record<string, unknown>),
+        execute: async (args) => {
+          return this.callTool(
+            def.serverName,
+            def.rawName,
+            (args ?? {}) as Record<string, unknown>
+          );
+        },
+      }) as Tool;
+    }
+    return out;
   }
 
   async callTool(
@@ -129,11 +207,17 @@ export class MCPManager {
         arguments: args,
       });
 
-      // Extract text content from result
       if (Array.isArray(result.content)) {
         return result.content
-          .map((c: any) => {
-            if (c.type === 'text') return c.text;
+          .map((c: unknown) => {
+            if (
+              c &&
+              typeof c === 'object' &&
+              (c as Record<string, unknown>)['type'] === 'text' &&
+              typeof (c as Record<string, unknown>)['text'] === 'string'
+            ) {
+              return (c as Record<string, string>)['text']!;
+            }
             return JSON.stringify(c);
           })
           .join('\n');
@@ -147,14 +231,15 @@ export class MCPManager {
   }
 
   async disconnect(): Promise<void> {
-    for (const [name, client] of this.clients) {
+    for (const [, client] of this.clients) {
       try {
         await client.close();
-      } catch (err) {
-        console.error(`[MCP] Error disconnecting from "${name}":`, err);
+      } catch {
+        // Ignore disconnect errors
       }
     }
     this.clients.clear();
+    this.cachedTools = [];
   }
 
   get connectedServers(): string[] {

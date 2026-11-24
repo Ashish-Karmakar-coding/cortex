@@ -25,7 +25,6 @@ export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({
   const [rejectMode, setRejectMode] = useState(false);
   const [feedback, setFeedback] = useState('');
 
-  // Handle single-key quick shortcuts: 'y', 'a', 'n' when not typing feedback
   useInput((input, key) => {
     if (rejectMode) {
       if (key.escape) {
@@ -62,8 +61,6 @@ export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({
     onDecision('reject', value.trim() || undefined);
   };
 
-  // Drop createPatch's redundant Index/==== header lines and keep the preview
-  // short enough to fit most terminals.
   const MAX_DIFF_LINES = 22;
   const diffLines = diff ? diff.split('\n') : [];
   const visibleDiff = diffLines[0]?.startsWith('Index:')
@@ -80,33 +77,40 @@ export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({
       marginY={1}
     >
       <Box marginBottom={1}>
-        <Text bold color={palette.warning}>
+        <Text bold color={palette.warning} backgroundColor={palette.bg}>
           ⚠️ Action Approval Required:{' '}
         </Text>
-        <Text bold color={palette.fg}>
+        <Text bold color={palette.fg} backgroundColor={palette.bg}>
           {toolName}
         </Text>
       </Box>
 
-      {/* Bash Exec details */}
       {toolName === 'bash_exec' && (
         <Box flexDirection="column" marginBottom={1}>
-          <Text dimColor>Command to execute:</Text>
+          <Text color={palette.muted} backgroundColor={palette.bg}>
+            Command to execute:
+          </Text>
           <Box borderStyle="single" borderColor={palette.border} paddingX={1}>
-            <Text color={palette.fg}>{String(args['command'] ?? '')}</Text>
+            <Text color={palette.fg} backgroundColor={palette.bg}>
+              {String(args['command'] ?? '')}
+            </Text>
           </Box>
         </Box>
       )}
 
-      {/* Subagent delegation */}
       {toolName === 'task' && (
         <Box flexDirection="column" marginBottom={1}>
-          <Text dimColor>
+          <Text color={palette.muted} backgroundColor={palette.bg}>
             Subagent:{' '}
-            <Text color={palette.fg}>{String(args['agent_type'] ?? 'general-purpose')}</Text>
+            <Text color={palette.fg} backgroundColor={palette.bg}>
+              {String(args['agent_type'] ?? 'general-purpose')}
+            </Text>
           </Text>
-          <Text dimColor>
-            Task: <Text color={palette.fg}>{String(args['description'] ?? '')}</Text>
+          <Text color={palette.muted} backgroundColor={palette.bg}>
+            Task:{' '}
+            <Text color={palette.fg} backgroundColor={palette.bg}>
+              {String(args['description'] ?? '')}
+            </Text>
           </Text>
           <Box
             flexDirection="column"
@@ -115,62 +119,65 @@ export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({
             paddingX={1}
             marginTop={1}
           >
-            <Text color={palette.muted}>{String(args['prompt'] ?? '')}</Text>
+            <Text color={palette.muted} backgroundColor={palette.bg}>
+              {String(args['prompt'] ?? '')}
+            </Text>
           </Box>
         </Box>
       )}
 
-      {/* File Write/Edit path */}
       {(toolName === 'write_file' || toolName === 'edit_file') && (
         <Box flexDirection="column" marginBottom={1}>
-          <Text dimColor>
-            Target file: <Text color={palette.fg}>{String(args['path'] ?? '')}</Text>
+          <Text color={palette.muted} backgroundColor={palette.bg}>
+            Target file:{' '}
+            <Text color={palette.fg} backgroundColor={palette.bg}>
+              {String(args['path'] ?? '')}
+            </Text>
           </Text>
         </Box>
       )}
 
-      {/* Diff display */}
       {diff && (
         <Box flexDirection="column" marginBottom={1}>
-          <Text bold dimColor>Unified Diff:</Text>
+          <Text bold color={palette.muted} backgroundColor={palette.bg}>
+            Unified Diff:
+          </Text>
           <Box
             flexDirection="column"
             borderStyle="single"
             borderColor={palette.border}
             paddingX={1}
           >
-            {visibleDiff
-              .slice(0, MAX_DIFF_LINES)
-              .map((line, idx) => {
-                if (line.startsWith('+') && !line.startsWith('+++')) {
-                  return (
-                    <Text key={idx} color={palette.success}>
-                      {line}
-                    </Text>
-                  );
-                }
-                if (line.startsWith('-') && !line.startsWith('---')) {
-                  return (
-                    <Text key={idx} color={palette.danger}>
-                      {line}
-                    </Text>
-                  );
-                }
-                if (line.startsWith('@@')) {
-                  return (
-                    <Text key={idx} color={palette.warning}>
-                      {line}
-                    </Text>
-                  );
-                }
+            {visibleDiff.slice(0, MAX_DIFF_LINES).map((line, idx) => {
+              if (line.startsWith('+') && !line.startsWith('+++')) {
                 return (
-                  <Text key={idx} dimColor>
+                  <Text key={idx} color={palette.success} backgroundColor={palette.bg}>
                     {line}
                   </Text>
                 );
-              })}
+              }
+              if (line.startsWith('-') && !line.startsWith('---')) {
+                return (
+                  <Text key={idx} color={palette.danger} backgroundColor={palette.bg}>
+                    {line}
+                  </Text>
+                );
+              }
+              if (line.startsWith('@@')) {
+                return (
+                  <Text key={idx} color={palette.warning} backgroundColor={palette.bg}>
+                    {line}
+                  </Text>
+                );
+              }
+              return (
+                <Text key={idx} color={palette.muted} backgroundColor={palette.bg}>
+                  {line}
+                </Text>
+              );
+            })}
             {visibleDiff.length > MAX_DIFF_LINES && (
-              <Text dimColor>
+              <Text color={palette.muted} backgroundColor={palette.bg}>
                 ... [{visibleDiff.length - MAX_DIFF_LINES} more lines omitted]
               </Text>
             )}
@@ -178,22 +185,26 @@ export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({
         </Box>
       )}
 
-      {/* Other tool arguments */}
       {toolName !== 'bash_exec' && toolName !== 'task' && !diff && (
         <Box flexDirection="column" marginBottom={1}>
-          <Text dimColor>Arguments:</Text>
-          <Text color={palette.muted}>{JSON.stringify(args, null, 2)}</Text>
+          <Text color={palette.muted} backgroundColor={palette.bg}>
+            Arguments:
+          </Text>
+          <Text color={palette.muted} backgroundColor={palette.bg}>
+            {JSON.stringify(args, null, 2)}
+          </Text>
         </Box>
       )}
 
-      {/* Interactive Selection or Feedback Input */}
       {rejectMode ? (
         <Box flexDirection="column" marginTop={1}>
-          <Text color={palette.danger}>
+          <Text color={palette.danger} backgroundColor={palette.bg}>
             Provide rejection feedback to agent (or press Enter for default, Esc to cancel):
           </Text>
           <Box marginTop={1}>
-            <Text color={palette.danger}>&gt; </Text>
+            <Text color={palette.danger} backgroundColor={palette.bg}>
+              &gt;{' '}
+            </Text>
             <TextInput
               value={feedback}
               onChange={setFeedback}
@@ -204,7 +215,9 @@ export const ApprovalPrompt: React.FC<ApprovalPromptProps> = ({
         </Box>
       ) : (
         <Box flexDirection="column" marginTop={1}>
-          <Text dimColor>Select an option (or press y / a / n):</Text>
+          <Text color={palette.muted} backgroundColor={palette.bg}>
+            Select an option (or press y / a / n):
+          </Text>
           <SelectInput
             items={selectItems}
             onSelect={handleSelect}

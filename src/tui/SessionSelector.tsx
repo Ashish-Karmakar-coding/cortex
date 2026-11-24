@@ -40,14 +40,19 @@ export const SessionSelector: React.FC<SessionSelectorProps> = ({
       marginY={1}
     >
       <Box marginBottom={1}>
-        <Text bold color={palette.fg}>
+        <Text bold color={palette.fg} backgroundColor={palette.bg}>
           ⏪ Resume a Session
         </Text>
-        <Text dimColor> (Press Esc to cancel)</Text>
+        <Text color={palette.muted} backgroundColor={palette.bg}>
+          {' '}
+          (Press Esc to cancel)
+        </Text>
       </Box>
 
       {items.length === 0 ? (
-        <Text color={palette.muted}>No saved sessions yet.</Text>
+        <Text color={palette.muted} backgroundColor={palette.bg}>
+          No saved sessions yet.
+        </Text>
       ) : (
         <SelectInput
           items={items}

@@ -1,6 +1,7 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
 import { isDangerous } from './registry.js';
 
 const MAX_OUTPUT_LINES = 300;
@@ -24,19 +25,43 @@ function truncateOutput(output: string): { text: string; truncated: boolean } {
   };
 }
 
+function killProcessTree(pid: number | undefined, fallbackKill: () => void): void {
+  if (!pid) {
+    fallbackKill();
+    return;
+  }
+  if (process.platform === 'win32') {
+    try {
+      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        stdio: 'ignore',
+        detached: true,
+      });
+      return;
+    } catch {
+      fallbackKill();
+      return;
+    }
+  }
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    fallbackKill();
+  }
+}
+
 export function createBashExecTool(abortSignal?: AbortSignal) {
   return tool({
     description:
       'Execute a shell command and return its output. Commands have a default timeout of 60 seconds. Use this for running tests, builds, git commands, and other shell operations.',
     parameters: z.object({
       command: z.string().describe('The shell command to execute'),
+      cwd: z.string().optional().describe('Working directory. Defaults to current directory.'),
       timeout: z
         .number()
         .optional()
         .describe('Timeout in milliseconds. Default: 60000'),
     }),
-    execute: async ({ command, timeout }) => {
-      // Safety check
+    execute: async ({ command, cwd, timeout }) => {
       if (isDangerous(command)) {
         return JSON.stringify({
           stdout: '',
@@ -47,16 +72,17 @@ export function createBashExecTool(abortSignal?: AbortSignal) {
       }
 
       const timeoutMs = timeout ?? DEFAULT_TIMEOUT;
+      const workDir = cwd ? resolve(cwd) : process.cwd();
 
       return new Promise<string>((resolvePromise) => {
         const isWindows = process.platform === 'win32';
 
         const child = spawn(command, {
           shell: true,
-          cwd: process.cwd(),
+          cwd: workDir,
           env: process.env,
           stdio: ['ignore', 'pipe', 'pipe'],
-          detached: !isWindows, // process group on Unix
+          detached: !isWindows,
         });
 
         let stdout = '';
@@ -71,32 +97,14 @@ export function createBashExecTool(abortSignal?: AbortSignal) {
           stderr += data.toString();
         });
 
-        // Timeout handler
         const timer = setTimeout(() => {
           killed = true;
-          try {
-            if (!isWindows && child.pid) {
-              process.kill(-child.pid, 'SIGTERM');
-            } else {
-              child.kill('SIGTERM');
-            }
-          } catch {
-            child.kill('SIGKILL');
-          }
+          killProcessTree(child.pid, () => child.kill('SIGKILL'));
         }, timeoutMs);
 
-        // AbortSignal handler
         const onAbort = () => {
           killed = true;
-          try {
-            if (!isWindows && child.pid) {
-              process.kill(-child.pid, 'SIGTERM');
-            } else {
-              child.kill('SIGTERM');
-            }
-          } catch {
-            child.kill('SIGKILL');
-          }
+          killProcessTree(child.pid, () => child.kill('SIGKILL'));
         };
 
         abortSignal?.addEventListener('abort', onAbort, { once: true });
@@ -114,7 +122,9 @@ export function createBashExecTool(abortSignal?: AbortSignal) {
               stderr: stderrResult.text,
               exitCode: killed ? null : exitCode,
               truncated: stdoutResult.truncated || stderrResult.truncated,
-              ...(killed ? { killed: true, reason: abortSignal?.aborted ? 'aborted' : 'timeout' } : {}),
+              ...(killed
+                ? { killed: true, reason: abortSignal?.aborted ? 'aborted' : 'timeout' }
+                : {}),
             })
           );
         });

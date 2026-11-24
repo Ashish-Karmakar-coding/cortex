@@ -1,11 +1,11 @@
 import type { LanguageModel } from 'ai';
 import type { Config } from '../config/store.js';
 import type { Provider } from '../config/models.js';
-import { ollama } from 'ollama-ai-provider';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { createOllamaModel } from './ollama.js';
 
 export interface ProviderOptions {
   provider: Provider;
@@ -18,7 +18,8 @@ export interface ProviderOptions {
 export function createModel(options: ProviderOptions): LanguageModel {
   switch (options.provider) {
     case 'ollama': {
-      return ollama(options.model, {
+      return createOllamaModel(options.model, {
+        baseURL: options.baseUrl,
         numCtx: options.numCtx ?? 16384,
       }) as LanguageModel;
     }
@@ -27,7 +28,7 @@ export function createModel(options: ProviderOptions): LanguageModel {
       const lmstudio = createOpenAICompatible({
         name: 'lmstudio',
         baseURL: options.baseUrl ?? 'http://localhost:1234/v1',
-        apiKey: 'lm-studio',
+        apiKey: options.apiKey ?? 'lm-studio',
       });
       return lmstudio.chatModel(options.model) as LanguageModel;
     }

@@ -1,20 +1,31 @@
 import { Command } from 'commander';
 import { loadConfig, saveConfig, setApiKey, getConfigDir } from './config/store.js';
-import { type Provider, getModelInfo, listAvailableModels } from './config/models.js';
-import { createModel, createModelFromConfig } from './providers/factory.js';
+import {
+  type Provider,
+  getModelInfo,
+  listAvailableModels,
+  resolveModelInfo,
+} from './config/models.js';
+import { createModelFromConfig } from './providers/factory.js';
 import { runAgentLoop, type AgentState, type ApprovalCallback } from './agent/loop.js';
+import { expandFileMentions } from './agent/mentions.js';
 import { SessionStore } from './persistence/sessions.js';
+import { ensureStoragePartition, LocalStore } from './storage/localStore.js';
+import { MCPManager, loadMCPConfig } from './mcp/client.js';
 import type { CoreMessage } from 'ai';
 import { createInterface } from 'node:readline';
-import { writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import chalk from 'chalk';
 import { VERSION } from './version.js';
 import { upgrade } from './upgrade.js';
 import { palette, applyTerminalTheme } from './tui/palette.js';
+import { createSolidStdout } from './tui/solidOutput.js';
 import { findSlashCommand, formatCommandHelp } from './tui/commands.js';
 import { initProjectFile } from './agent/init.js';
 import { loadSubagents } from './agent/subagents.js';
+import type { AgentPermissionMode } from './tools/registry.js';
 
 const fg = chalk.hex(palette.fg);
 const muted = chalk.hex(palette.muted);
@@ -22,19 +33,24 @@ const success = chalk.hex(palette.success);
 const warning = chalk.hex(palette.warning);
 const danger = chalk.hex(palette.danger);
 
-/** Tools that require approval unless auto-approve is enabled. */
-const CONFIRM_TOOL_NAMES = ['write_file', 'edit_file', 'bash_exec', 'task'];
+const CONFIRM_TOOL_NAMES = ['write_file', 'edit_file', 'bash_exec', 'web_fetch', 'task'];
 
 const program = new Command();
 
+type SubcommandAction = 'none' | 'upgrade' | 'init-storage' | 'storage';
+const subcommandState: { action: SubcommandAction; customStorageDir?: string } = {
+  action: 'none',
+};
+
 program
   .name('cortex')
-  .description('Cortex — An agentic AI coding assistant for your terminal')
+  .description('Cortex — An open-source, local-first agentic coding CLI')
   .version(VERSION)
   .option('-p, --prompt <text>', 'Non-interactive prompt (pipe mode)')
   .option('--provider <name>', 'Override LLM provider')
   .option('--model <name>', 'Override model')
   .option('--yes', 'Auto-approve all tool calls')
+  .option('--plan', 'Start in read-only plan mode')
   .option('--resume <session-id>', 'Resume a previous session')
   .option('--plain', 'Use plain line-by-line terminal mode instead of Ink TUI')
   .option('--num-ctx <number>', 'Set Ollama context window size', '16384');
@@ -43,14 +59,27 @@ program
   .command('upgrade')
   .description('Update Cortex to the latest release from GitHub')
   .action(() => {
-    upgradeRequested = true;
+    subcommandState.action = 'upgrade';
   });
 
-// Defining a subcommand makes Commander print help when the root command has no
-// action. This no-op keeps `cortex` / `cortex --plain` working as before.
-program.action(() => {});
+program
+  .command('init-storage')
+  .alias('setup')
+  .description('Create and initialize the local storage partition')
+  .option('--storage-dir <path>', 'Custom directory for the local storage partition')
+  .action((cmdOpts: { storageDir?: string }) => {
+    subcommandState.action = 'init-storage';
+    subcommandState.customStorageDir = cmdOpts.storageDir;
+  });
 
-let upgradeRequested = false;
+program
+  .command('storage')
+  .description('Show local storage partition location and usage statistics')
+  .action(() => {
+    subcommandState.action = 'storage';
+  });
+
+program.action(() => {});
 
 await program.parseAsync(process.argv);
 
@@ -59,28 +88,60 @@ const opts = program.opts<{
   provider?: string;
   model?: string;
   yes?: boolean;
+  plan?: boolean;
   resume?: string;
   plain?: boolean;
   numCtx: string;
 }>();
 
+if (subcommandState.action === 'upgrade') {
+  const ok = await upgrade();
+  process.exit(ok ? 0 : 1);
+}
+
+if (subcommandState.action === 'init-storage') {
+  const result = ensureStoragePartition(subcommandState.customStorageDir);
+  console.log(
+    result.created
+      ? `Initialized Cortex local storage partition:`
+      : `Verified Cortex local storage partition:`
+  );
+  console.log(`  Config dir : ${result.configDir}`);
+  console.log(`  Storage dir: ${result.storageDir}`);
+  console.log(`  SQLite DB  : ${result.dbPath}`);
+  console.log(`  Storage ID : ${result.manifest.storageId}`);
+  process.exit(0);
+}
+
+if (subcommandState.action === 'storage') {
+  ensureStoragePartition();
+  const store = new LocalStore();
+  const stats = store.getStats();
+  store.close();
+  console.log(`Cortex Local Storage Partition`);
+  console.log(`  Config dir     : ${stats.configDir}`);
+  console.log(`  Storage dir    : ${stats.storageDir}`);
+  console.log(`  Database       : ${stats.dbPath} (${(stats.dbBytes / 1024).toFixed(1)} KB)`);
+  console.log(`  Manifest       : ${stats.manifestPath}`);
+  console.log(`  Sessions       : ${stats.sessionsCount}`);
+  console.log(`  Checkpoints    : ${stats.checkpointsCount}`);
+  console.log(`  Memory entries : ${stats.memoryCount}`);
+  console.log(`  Prompt history : ${stats.promptHistoryCount}`);
+  console.log(`  Tool audit log : ${stats.auditLogsCount}`);
+  process.exit(0);
+}
 
 async function main() {
+  // Always ensure the local storage partition exists before loading config/sessions.
+  ensureStoragePartition();
   const config = loadConfig();
 
-  // Apply CLI overrides
-  if (opts.provider) {
-    config.activeProvider = opts.provider;
-  }
-  if (opts.model) {
-    config.activeModel = opts.model;
-  }
-  if (opts.numCtx) {
-    config.numCtx = parseInt(opts.numCtx, 10);
-  }
+  if (opts.provider) config.activeProvider = opts.provider;
+  if (opts.model) config.activeModel = opts.model;
+  if (opts.numCtx) config.numCtx = parseInt(opts.numCtx, 10);
 
   const provider = config.activeProvider as Provider;
-  const modelInfo = getModelInfo(config.activeModel, provider);
+  let modelInfo = getModelInfo(config.activeModel, provider, config.numCtx);
 
   let model;
   try {
@@ -90,32 +151,26 @@ async function main() {
     process.exit(1);
   }
 
-  // Session management
   const sessionStore = new SessionStore();
+  const localStore = sessionStore.rawStore;
   let messages: CoreMessage[] = [];
   let sessionId = sessionStore.generateId();
+  let sessionTitle: string | undefined;
+  let sessionCreatedAt = new Date().toISOString();
 
   if (opts.resume) {
     const session = sessionStore.load(opts.resume);
     if (session) {
       messages = JSON.parse(session.messages) as CoreMessage[];
       sessionId = session.id;
+      sessionTitle = session.title;
+      sessionCreatedAt = session.createdAt;
       console.error(`Resumed session: ${session.title}`);
     } else {
       console.error(`Session not found: ${opts.resume}`);
       process.exit(1);
     }
   }
-
-  const state: AgentState = {
-    messages,
-    abortController: new AbortController(),
-    isRunning: false,
-    sessionApprovals: new Set(opts.yes ? ['write_file', 'edit_file', 'bash_exec'] : []),
-    model,
-    config,
-    modelInfo,
-  };
 
   const isTTY = process.stdin.isTTY && !opts.prompt;
 
@@ -124,7 +179,6 @@ async function main() {
     let input = '';
 
     if (!process.stdin.isTTY) {
-      // Read stdin
       const chunks: Buffer[] = [];
       for await (const chunk of process.stdin) {
         chunks.push(chunk as Buffer);
@@ -132,28 +186,58 @@ async function main() {
       input = Buffer.concat(chunks).toString('utf-8');
     }
 
-    const prompt = opts.prompt
+    const rawPrompt = opts.prompt
       ? input
         ? `${opts.prompt}\n\n---\n\n${input}`
         : opts.prompt
       : input;
 
-    if (!prompt.trim()) {
+    if (!rawPrompt.trim()) {
       console.error('Error: No input provided. Use -p "prompt" or pipe input.');
       process.exit(1);
     }
 
-    // Auto-approve all tools in pipe mode
+    const { expandedPrompt } = expandFileMentions(rawPrompt);
+    modelInfo = await resolveModelInfo(config.activeModel, provider, config, localStore);
+
+    const mcpManager = new MCPManager();
+    const mcpConfigs = await loadMCPConfig();
+    if (mcpConfigs.length > 0) {
+      await mcpManager.connect(mcpConfigs);
+    }
+
+    const permissionMode: AgentPermissionMode = opts.plan
+      ? 'plan'
+      : opts.yes
+        ? 'auto'
+        : 'manual';
+
+    const state: AgentState = {
+      messages,
+      abortController: new AbortController(),
+      isRunning: false,
+      sessionApprovals: new Set(opts.yes ? CONFIRM_TOOL_NAMES : []),
+      permissionMode,
+      model,
+      config,
+      modelInfo,
+      sessionId,
+      localStore,
+      mcpManager,
+    };
+
     const approvalCallback: ApprovalCallback = async () => 'allow';
 
     try {
-      const result = await runAgentLoop(state, prompt, {
+      await runAgentLoop(state, expandedPrompt, {
         onStream: (chunk) => process.stdout.write(chunk),
-        onApproval: opts.yes ? approvalCallback : async (toolName, args) => {
-          console.error(`\n[Tool: ${toolName}] ${JSON.stringify(args).slice(0, 200)}`);
-          console.error('[Auto-rejecting in pipe mode without --yes]');
-          return 'reject';
-        },
+        onApproval: opts.yes
+          ? approvalCallback
+          : async (toolName, args) => {
+              console.error(`\n[Tool: ${toolName}] ${JSON.stringify(args).slice(0, 200)}`);
+              console.error('[Auto-rejecting in pipe mode without --yes]');
+              return 'reject';
+            },
         onToolStart: (name) => console.error(`\n[Running: ${name}]`),
         onToolEnd: (name, result) =>
           console.error(`[Done: ${name}] ${result.slice(0, 100)}`),
@@ -168,32 +252,37 @@ async function main() {
         },
       });
 
-      // Save session
       sessionStore.save({
         id: sessionId,
-        title: sessionStore.generateTitle(prompt),
+        title: sessionTitle ?? sessionStore.generateTitle(rawPrompt),
         provider: config.activeProvider,
         model: config.activeModel,
+        cwd: process.cwd(),
         messages: JSON.stringify(state.messages),
-        createdAt: new Date().toISOString(),
+        createdAt: sessionCreatedAt,
         updatedAt: new Date().toISOString(),
       });
 
+      await mcpManager.disconnect();
+      sessionStore.close();
       process.stdout.write('\n');
       process.exit(0);
     } catch (err) {
-      console.error(
-        `\nError: ${err instanceof Error ? err.message : String(err)}`
-      );
+      await mcpManager.disconnect();
+      sessionStore.close();
+      console.error(`\nError: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
   } else if (!opts.plain) {
-    // === Interactive Ink TUI Mode ===
-    applyTerminalTheme();
+    // === Interactive Ink TUI Mode (Solid non-transparent surface) ===
+    sessionStore.close();
+    applyTerminalTheme(true);
 
     const { render } = await import('ink');
     const { default: React } = await import('react');
     const { App } = await import('./tui/App.js');
+
+    const solidStdout = createSolidStdout(process.stdout);
 
     render(
       React.createElement(App, {
@@ -201,20 +290,47 @@ async function main() {
         sessionId,
         initialMessages: messages,
         autoApprove: opts.yes,
-      })
+      }),
+      { stdout: solidStdout }
     );
   } else {
     // === Plain Terminal Readline Fallback Mode ===
-    applyTerminalTheme();
+    applyTerminalTheme(true);
+    modelInfo = await resolveModelInfo(config.activeModel, provider, config, localStore);
+
+    const mcpManager = new MCPManager();
+    const mcpConfigs = await loadMCPConfig();
+    if (mcpConfigs.length > 0) {
+      await mcpManager.connect(mcpConfigs);
+    }
+
+    const permissionMode: AgentPermissionMode = opts.plan
+      ? 'plan'
+      : opts.yes
+        ? 'auto'
+        : 'manual';
+
+    const state: AgentState = {
+      messages,
+      abortController: new AbortController(),
+      isRunning: false,
+      sessionApprovals: new Set(opts.yes ? CONFIRM_TOOL_NAMES : []),
+      permissionMode,
+      model,
+      config,
+      modelInfo,
+      sessionId,
+      localStore,
+      mcpManager,
+    };
 
     console.log(fg('╔══════════════════════════════════════════════╗'));
     console.log(`${fg('║')}  🤖 ${fg.bold('Cortex')} — Agentic AI Coding Assistant   ${fg('║')}`);
     console.log(fg('╚══════════════════════════════════════════════╝'));
     console.log(
-      `  ${muted('Provider:')} ${fg(config.activeProvider)} ${muted('|')} ${muted('Model:')} ${fg(config.activeModel)}`
+      `  ${muted('Provider:')} ${fg(config.activeProvider)} ${muted('|')} ${muted('Model:')} ${fg(config.activeModel)} ${muted('|')} ${muted('Storage:')} ${fg(localStore.storageDir)}`
     );
-    console.log(muted('  Type your request, or use slash commands:'));
-    console.log(muted('  / commands — type /help for the full list\n'));
+    console.log(muted('  Type your request, @file to attach, or /help for commands\n'));
 
     const rl = createInterface({
       input: process.stdin,
@@ -226,7 +342,6 @@ async function main() {
 
     rl.on('SIGINT', () => {
       if (state.isRunning) {
-        // Abort current operation
         state.abortController.abort();
         state.abortController = new AbortController();
         console.log(`\n${warning('[Interrupted]')}`);
@@ -235,6 +350,7 @@ async function main() {
         ctrlCCount++;
         if (ctrlCCount >= 2) {
           console.log('\nGoodbye!');
+          void mcpManager.disconnect();
           sessionStore.close();
           process.exit(0);
         }
@@ -252,11 +368,7 @@ async function main() {
         case '/help':
           console.log(`\n${fg.bold('Slash Commands:')}`);
           console.log(muted(formatCommandHelp().split('\n').map((line) => `  ${line}`).join('\n')));
-          console.log(
-            `\n${fg.bold('Shortcuts:')}\n${muted(
-              '  Ctrl+C  interrupt, or press twice to exit\n  /quit   exit Cortex'
-            )}\n`
-          );
+          console.log('');
           return true;
 
         case '/agents': {
@@ -267,11 +379,46 @@ async function main() {
             console.log(`  ${fg(agent.name)}${source} — ${agent.description}`);
             console.log(muted(`    tools: ${agent.tools.join(', ')}`));
           }
-          console.log(
-            muted(
-              `\n  Add custom agents in .cortex/agents/<name>.md or ${join(getConfigDir(), 'agents')}.\n`
-            )
-          );
+          console.log('');
+          return true;
+        }
+
+        case '/storage': {
+          const stats = localStore.getStats();
+          console.log(`\n${fg.bold('Local Storage Partition:')}`);
+          console.log(`  ${muted('Storage dir:')} ${fg(stats.storageDir)}`);
+          console.log(`  ${muted('DB:')} ${fg(stats.dbPath)} (${(stats.dbBytes / 1024).toFixed(1)} KB)`);
+          console.log(`  ${muted('Sessions:')} ${fg(String(stats.sessionsCount))} | ${muted('Checkpoints:')} ${fg(String(stats.checkpointsCount))}\n`);
+          return true;
+        }
+
+        case '/rewind': {
+          const checkpoints = localStore.listCheckpoints(sessionId, 10);
+          if (checkpoints.length === 0) {
+            console.log(`${warning('No checkpoints to rewind.')}\n`);
+            return true;
+          }
+          const latestTurn = checkpoints[0]!.turnIndex;
+          for (const cp of checkpoints.filter((c) => c.turnIndex === latestTurn)) {
+            if (!cp.existedBefore) {
+              if (existsSync(cp.filePath)) unlinkSync(cp.filePath);
+            } else if (cp.previousContent !== null) {
+              mkdirSync(dirname(cp.filePath), { recursive: true });
+              writeFileSync(cp.filePath, cp.previousContent, 'utf-8');
+            }
+            localStore.deleteCheckpoint(cp.id);
+          }
+          console.log(`${success(`Rewound turn ${latestTurn}.`)}\n`);
+          return true;
+        }
+
+        case '/diff': {
+          try {
+            const out = execFileSync('git', ['diff'], { encoding: 'utf-8' }).trim();
+            console.log(`\n${out || muted('(no unstaged changes)')}\n`);
+          } catch (err) {
+            console.log(`${danger(String(err))}\n`);
+          }
           return true;
         }
 
@@ -285,8 +432,7 @@ async function main() {
           const answer = parts[1];
           if (answer && providers.includes(answer)) {
             config.activeProvider = answer;
-            const newModelInfo = getModelInfo(config.activeModel, answer as Provider);
-            state.modelInfo = newModelInfo;
+            state.modelInfo = await resolveModelInfo(config.activeModel, answer as Provider, config, localStore);
             try {
               state.model = createModelFromConfig(config);
               saveConfig(config);
@@ -313,7 +459,7 @@ async function main() {
           const modelId = parts[1];
           if (modelId) {
             config.activeModel = modelId;
-            state.modelInfo = getModelInfo(modelId, prov);
+            state.modelInfo = await resolveModelInfo(modelId, prov, config, localStore);
             try {
               state.model = createModelFromConfig(config);
               saveConfig(config);
@@ -353,7 +499,7 @@ async function main() {
               console.log(`  ${i + 1}. ${muted(`[${s.model}]`)} ${fg(s.title)} ${muted(`(${s.updatedAt})`)}`);
               console.log(muted(`     /resume ${s.id}`));
             });
-            console.log(muted('\n  Use /resume <session-id> to load a session.\n'));
+            console.log('');
           }
           return true;
         }
@@ -372,9 +518,9 @@ async function main() {
           try {
             state.messages = JSON.parse(session.messages) as CoreMessage[];
             sessionId = session.id;
-            console.log(
-              `${success(`Resumed "${session.title}" (${state.messages.length} messages)`)}\n`
-            );
+            sessionTitle = session.title;
+            sessionCreatedAt = session.createdAt;
+            console.log(`${success(`Resumed "${session.title}" (${state.messages.length} messages)`)}\n`);
           } catch {
             console.log(`${danger('That session could not be parsed.')}\n`);
           }
@@ -385,20 +531,18 @@ async function main() {
         case '/clear':
           state.messages = [];
           sessionId = sessionStore.generateId();
+          sessionTitle = undefined;
+          sessionCreatedAt = new Date().toISOString();
           console.log(`${success('Started a new conversation.')}\n`);
           return true;
 
         case '/init': {
-          try {
-            const result = initProjectFile();
-            console.log(
-              result.created
-                ? `${success(`Created ${result.path}`)}\n`
-                : `${warning(`${result.path} already exists — edit it to describe this project.`)}\n`
-            );
-          } catch (err) {
-            console.log(`${danger(`Could not create CORTEX.md: ${String(err)}`)}\n`);
-          }
+          const result = initProjectFile();
+          console.log(
+            result.created
+              ? `${success(`Created ${result.path}`)}\n`
+              : `${warning(`${result.path} already exists.`)}\n`
+          );
           return true;
         }
 
@@ -406,104 +550,27 @@ async function main() {
           console.log(`\n${fg.bold(`Cortex ${VERSION}`)}`);
           console.log(`  ${muted('Provider:')} ${fg(config.activeProvider)}`);
           console.log(`  ${muted('Model:')} ${fg(config.activeModel)}`);
-          console.log(`  ${muted('Context:')} ${fg(state.modelInfo.contextWindow.toLocaleString())} tokens`);
-          console.log(`  ${muted('Messages:')} ${fg(String(state.messages.length))}`);
-          console.log(`  ${muted('Session:')} ${fg(sessionId)}`);
-          console.log(
-            `  ${muted('Auto-approve:')} ${fg(
-              CONFIRM_TOOL_NAMES.every((tool) => state.sessionApprovals.has(tool)) ? 'on' : 'off'
-            )}`
-          );
-          console.log(`  ${muted('Config:')} ${fg(getConfigDir())}`);
-          console.log(`  ${muted('cwd:')} ${fg(process.cwd())}\n`);
+          console.log(`  ${muted('Mode:')} ${fg(state.permissionMode)}`);
+          console.log(`  ${muted('Storage:')} ${fg(localStore.storageDir)}\n`);
           return true;
 
-        case '/doctor': {
-          const checks: string[] = [];
-          const [major, minor] = process.versions.node.split('.').map(Number);
-          const nodeOk = (major ?? 0) > 22 || ((major ?? 0) === 22 && (minor ?? 0) >= 13);
-          checks.push(`${nodeOk ? '✓' : '✗'} Node.js ${process.versions.node} (need >= 22.13)`);
-          checks.push(`${existsSync(getConfigDir()) ? '✓' : '✗'} Config directory ${getConfigDir()}`);
-          try {
-            sessionStore.list();
-            checks.push('✓ Session database readable');
-          } catch (err) {
-            checks.push(`✗ Session database: ${String(err)}`);
-          }
-          const prov = config.activeProvider as Provider;
-          if (prov === 'ollama' || prov === 'lmstudio') {
-            const baseUrl =
-              config.providers[prov]?.baseUrl ??
-              (prov === 'ollama' ? 'http://localhost:11434' : 'http://localhost:1234/v1');
-            const url = prov === 'ollama' ? `${baseUrl}/api/tags` : `${baseUrl}/models`;
-            try {
-              const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
-              checks.push(`${response.ok ? '✓' : '✗'} ${prov} at ${baseUrl}`);
-            } catch {
-              checks.push(`✗ ${prov} not reachable at ${baseUrl}`);
-            }
-          } else {
-            const key =
-              config.providers[prov]?.apiKey ?? process.env[`${prov.toUpperCase()}_API_KEY`];
-            checks.push(`${key ? '✓' : '✗'} ${prov} API key ${key ? 'configured' : 'missing'}`);
-          }
-          console.log(`\n${fg.bold('Diagnostics:')}`);
-          console.log(muted(checks.map((line) => `  ${line}`).join('\n')));
-          console.log('');
-          return true;
-        }
-
-        case '/export': {
-          const lines: string[] = [
-            '# Cortex conversation',
-            '',
-            `- Exported: ${new Date().toISOString()}`,
-            `- Provider: ${config.activeProvider}`,
-            `- Model: ${config.activeModel}`,
-            `- Session: ${sessionId}`,
-            '',
-          ];
-          for (const message of state.messages) {
-            if (message.role !== 'user' && message.role !== 'assistant') continue;
-            const text =
-              typeof message.content === 'string'
-                ? message.content
-                : Array.isArray(message.content)
-                  ? message.content
-                      .filter((part) => part.type === 'text')
-                      .map((part) => (part as { text: string }).text)
-                      .join('\n')
-                  : '';
-            if (!text.trim()) continue;
-            lines.push(message.role === 'user' ? '## You' : '## Cortex', '', text, '');
-          }
-          const filePath = join(
-            process.cwd(),
-            `cortex-export-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15)}.md`
-          );
-          try {
-            writeFileSync(filePath, lines.join('\n'), 'utf-8');
-            console.log(`${success(`Exported to ${filePath}`)}\n`);
-          } catch (err) {
-            console.log(`${danger(`Export failed: ${String(err)}`)}\n`);
-          }
-          return true;
-        }
-
-        case '/auto': {
-          const enabled = CONFIRM_TOOL_NAMES.every((tool) => state.sessionApprovals.has(tool));
+        case '/auto':
+          state.permissionMode = state.permissionMode === 'auto' ? 'manual' : 'auto';
           for (const tool of CONFIRM_TOOL_NAMES) {
-            if (enabled) state.sessionApprovals.delete(tool);
-            else state.sessionApprovals.add(tool);
+            if (state.permissionMode === 'auto') state.sessionApprovals.add(tool);
+            else state.sessionApprovals.delete(tool);
           }
-          console.log(
-            `${success(`Auto-approve ${enabled ? 'disabled' : 'enabled'}.`)}\n`
-          );
+          console.log(`${success(`Mode: ${state.permissionMode}`)}\n`);
           return true;
-        }
+
+        case '/plan':
+          state.permissionMode = state.permissionMode === 'plan' ? 'manual' : 'plan';
+          console.log(`${success(`Mode: ${state.permissionMode}`)}\n`);
+          return true;
 
         case '/quit':
         case '/exit':
+          await mcpManager.disconnect();
           sessionStore.close();
           console.log('\nGoodbye!');
           process.exit(0);
@@ -517,19 +584,14 @@ async function main() {
       return new Promise((resolve) => {
         console.log(`\n${warning(`┌─ Tool: ${toolName}`)}`);
         if (toolName === 'bash_exec') {
-          console.log(`${warning('│')} ${muted('Command:')} ${fg(String((args as any).command))}`);
+          console.log(`${warning('│')} ${muted('Command:')} ${fg(String(args['command'] ?? ''))}`);
         } else if (toolName === 'edit_file' || toolName === 'write_file') {
-          console.log(`${warning('│')} ${muted('File:')} ${fg(String((args as any).path))}`);
+          console.log(`${warning('│')} ${muted('File:')} ${fg(String(args['path'] ?? ''))}`);
           if (diff) {
-            console.log(`${warning('│')} ${muted('Diff:')}`);
             for (const line of diff.split('\n').slice(0, 30)) {
-              if (line.startsWith('+')) {
-                console.log(`${warning('│')} ${success(line)}`);
-              } else if (line.startsWith('-')) {
-                console.log(`${warning('│')} ${danger(line)}`);
-              } else {
-                console.log(`${warning('│')} ${muted(line)}`);
-              }
+              if (line.startsWith('+')) console.log(`${warning('│')} ${success(line)}`);
+              else if (line.startsWith('-')) console.log(`${warning('│')} ${danger(line)}`);
+              else console.log(`${warning('│')} ${muted(line)}`);
             }
           }
         } else {
@@ -543,13 +605,9 @@ async function main() {
         approvalRl.question(`${fg('  >')} `, (answer) => {
           approvalRl.close();
           const a = answer.trim().toLowerCase();
-          if (a === 'a' || a === 'allow') {
-            resolve('allow_session');
-          } else if (a === 'n' || a === 'no' || a === 'reject') {
-            resolve('reject');
-          } else {
-            resolve('allow');
-          }
+          if (a === 'a' || a === 'allow') resolve('allow_session');
+          else if (a === 'n' || a === 'no' || a === 'reject') resolve('reject');
+          else resolve('allow');
         });
       });
     };
@@ -565,7 +623,6 @@ async function main() {
         return;
       }
 
-      // Handle slash commands
       if (input.startsWith('/')) {
         const handled = await handleSlashCommand(input);
         if (handled) {
@@ -574,10 +631,13 @@ async function main() {
         }
       }
 
-      // Run agent loop
+      localStore.addPromptHistory(input, process.cwd());
+      if (!sessionTitle) sessionTitle = sessionStore.generateTitle(input);
+      const { expandedPrompt } = expandFileMentions(input);
+
       console.log('');
       try {
-        await runAgentLoop(state, input, {
+        await runAgentLoop(state, expandedPrompt, {
           onStream: (chunk) => process.stdout.write(chunk),
           onApproval: approvalCallback,
           onToolStart: (name) => console.log(`\n${muted(`[Running: ${name}]`)}`),
@@ -593,14 +653,14 @@ async function main() {
           },
         });
 
-        // Auto-save session
         sessionStore.save({
           id: sessionId,
-          title: sessionStore.generateTitle(state.messages[0]?.content as string ?? 'untitled'),
+          title: sessionTitle,
           provider: config.activeProvider,
           model: config.activeModel,
+          cwd: process.cwd(),
           messages: JSON.stringify(state.messages),
-          createdAt: new Date().toISOString(),
+          createdAt: sessionCreatedAt,
           updatedAt: new Date().toISOString(),
         });
       } catch (err) {
@@ -613,15 +673,11 @@ async function main() {
 
     rl.on('close', () => {
       console.log('\nGoodbye!');
+      void mcpManager.disconnect();
       sessionStore.close();
       process.exit(0);
     });
   }
-}
-
-if (upgradeRequested) {
-  const ok = await upgrade();
-  process.exit(ok ? 0 : 1);
 }
 
 await main().catch((err) => {

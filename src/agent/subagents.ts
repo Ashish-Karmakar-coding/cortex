@@ -5,21 +5,16 @@ import { getConfigDir } from '../config/store.js';
 import { readFileTool, writeFileTool, editFileTool } from '../tools/fs.js';
 import { globFilesTool, grepSearchTool } from '../tools/search.js';
 import { createBashExecTool } from '../tools/shell.js';
-import { parseToolCalls, hasToolCalls } from './fallbackParser.js';
-
-/**
- * Subagents are isolated agent loops that the main agent delegates to through
- * the `task` tool. Each one has its own message history, tool allowlist, and
- * instructions, so investigation work never bloats the parent conversation.
- */
+import { gitStatusTool, gitDiffTool, gitLogTool } from '../tools/git.js';
+import { isToolsUnsupportedError } from '../providers/ollama.js';
+import { parseToolCalls, hasToolCalls, normalizeToolArguments } from './fallbackParser.js';
+import { buildXmlToolInstructions } from './prompts.js';
 
 export type SubagentSource = 'builtin' | 'project' | 'user';
 
 export interface SubagentDefinition {
-  /** Unique identifier used by the `agent_type` tool argument. */
   name: string;
   description: string;
-  /** Tool names this agent may call. `task` is never allowed (no recursion). */
   tools: string[];
   systemPrompt: string;
   source: SubagentSource;
@@ -33,10 +28,20 @@ export const ALL_SUBAGENT_TOOLS = [
   'edit_file',
   'glob_files',
   'grep_search',
+  'git_status',
+  'git_diff',
+  'git_log',
   'bash_exec',
 ] as const;
 
-const READ_ONLY_TOOLS = ['read_file', 'glob_files', 'grep_search'];
+const READ_ONLY_TOOLS = [
+  'read_file',
+  'glob_files',
+  'grep_search',
+  'git_status',
+  'git_diff',
+  'git_log',
+];
 
 const BUILTIN_AGENTS: SubagentDefinition[] = [
   {
@@ -94,7 +99,6 @@ interface Frontmatter {
   body: string;
 }
 
-/** Minimal YAML frontmatter parser for `key: value` agent files. */
 function parseFrontmatter(raw: string): Frontmatter {
   if (!raw.startsWith('---')) {
     return { meta: {}, body: raw.trim() };
@@ -156,10 +160,6 @@ function loadAgentDir(dir: string, source: SubagentSource): SubagentDefinition[]
   }
 }
 
-/**
- * Resolve subagents from built-ins, then the project (`.cortex/agents`), then
- * the user config directory. Later definitions override earlier ones by name.
- */
 export function loadSubagents(cwd = process.cwd()): SubagentDefinition[] {
   const byName = new Map<string, SubagentDefinition>();
   for (const agent of BUILTIN_AGENTS) {
@@ -175,21 +175,21 @@ export function loadSubagents(cwd = process.cwd()): SubagentDefinition[] {
 }
 
 export type SubagentEvent =
-  | { type: 'start'; name: string; description: string }
-  | { type: 'text'; name: string; chunk: string }
-  | { type: 'tool'; name: string; tool: string; detail: string }
-  | { type: 'done'; name: string; summary: string }
-  | { type: 'error'; name: string; error: string };
+  | { type: 'start'; runId?: string; name: string; description: string }
+  | { type: 'text'; runId?: string; name: string; chunk: string }
+  | { type: 'tool'; runId?: string; name: string; tool: string; detail: string }
+  | { type: 'done'; runId?: string; name: string; summary: string }
+  | { type: 'error'; runId?: string; name: string; error: string };
 
 export interface RunSubagentOptions {
   definition: SubagentDefinition;
-  /** Self-contained instructions written by the main agent. */
   prompt: string;
   model: LanguageModel;
   modelSupportsToolCalling: boolean;
   abortSignal: AbortSignal;
-  /** Parent system prompt, reused so the subagent sees the same project context. */
+  /** Base system prompt WITHOUT XML instructions appended. */
   parentSystemPrompt: string;
+  runId?: string;
   onEvent?: (event: SubagentEvent) => void;
 }
 
@@ -200,6 +200,9 @@ function buildSubagentTools(definition: SubagentDefinition, abortSignal: AbortSi
     edit_file: editFileTool,
     glob_files: globFilesTool,
     grep_search: grepSearchTool,
+    git_status: gitStatusTool,
+    git_diff: gitDiffTool,
+    git_log: gitLogTool,
     bash_exec: createBashExecTool(abortSignal),
   } as const;
 
@@ -224,13 +227,8 @@ function toolDetail(toolName: string, args: Record<string, unknown>): string {
   return toolName;
 }
 
-/**
- * Run one subagent to completion and return its final report. Tool calls are
- * executed without prompting: the user already approved the delegation when
- * they approved the `task` tool call, and the allowlist bounds what it can do.
- */
 export async function runSubagent(options: RunSubagentOptions): Promise<string> {
-  const { definition, abortSignal, onEvent } = options;
+  const { definition, abortSignal, onEvent, runId } = options;
   const messages: CoreMessage[] = [
     {
       role: 'user',
@@ -240,7 +238,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<string> 
 
   const tools = buildSubagentTools(definition, abortSignal);
   const toolNames = Object.keys(tools);
-  const systemPrompt = `${definition.systemPrompt}
+  const baseSystemPrompt = `${definition.systemPrompt}
 
 ## Subagent Context
 You are the "${definition.name}" subagent, delegated by the main Cortex agent.
@@ -249,6 +247,29 @@ Work autonomously. When you are finished, reply with a compact summary that the 
 
 ${options.parentSystemPrompt}`;
 
+  const executeTool = async (name: string, rawArgs: Record<string, unknown>): Promise<string> => {
+    const args = normalizeToolArguments(name, rawArgs);
+    onEvent?.({
+      type: 'tool',
+      runId,
+      name: definition.name,
+      tool: name,
+      detail: toolDetail(name, args),
+    });
+
+    const toolFn = tools[name as keyof typeof tools];
+    if (!toolFn) {
+      return `Tool "${name}" is not available to this subagent. Allowed: ${toolNames.join(', ')}.`;
+    }
+    try {
+      const value = await (toolFn as any).execute(args, { abortSignal });
+      return typeof value === 'string' ? value : JSON.stringify(value);
+    } catch (err) {
+      return `Tool error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  };
+
+  let useNative = options.modelSupportsToolCalling;
   const maxIterations = definition.maxIterations ?? 16;
   let lastText = '';
   let iterations = 0;
@@ -257,60 +278,61 @@ ${options.parentSystemPrompt}`;
     while (iterations < maxIterations) {
       iterations++;
 
-      if (options.modelSupportsToolCalling) {
-        const result = streamText({
-          model: options.model,
-          system: systemPrompt,
-          messages,
-          tools,
-          maxSteps: 1,
-          abortSignal,
-        });
-
+      if (useNative) {
         let fullText = '';
-        for await (const chunk of result.textStream) {
-          fullText += chunk;
-          onEvent?.({ type: 'text', name: definition.name, chunk });
+        let toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown }> = [];
+
+        try {
+          const result = streamText({
+            model: options.model,
+            system: baseSystemPrompt,
+            messages,
+            tools,
+            maxSteps: 1,
+            abortSignal,
+          });
+
+          for await (const chunk of result.textStream) {
+            fullText += chunk;
+            onEvent?.({ type: 'text', runId, name: definition.name, chunk });
+          }
+
+          const finalResult = await result;
+          toolCalls = (await finalResult.toolCalls) ?? [];
+        } catch (err) {
+          if (isToolsUnsupportedError(err)) {
+            useNative = false;
+            iterations--;
+            continue;
+          }
+          throw err;
         }
 
-        const finalResult = await result;
-        const toolCalls = await finalResult.toolCalls;
-
-        if (toolCalls && toolCalls.length > 0) {
+        if (toolCalls.length > 0) {
           lastText = fullText;
-          messages.push({
-            role: 'assistant',
-            content: toolCalls.map((call) => ({
-              type: 'tool-call' as const,
+          const contentParts: Array<
+            | { type: 'text'; text: string }
+            | { type: 'tool-call'; toolCallId: string; toolName: string; args: unknown }
+          > = [];
+          if (fullText.trim()) {
+            contentParts.push({ type: 'text', text: fullText });
+          }
+          for (const call of toolCalls) {
+            contentParts.push({
+              type: 'tool-call',
               toolCallId: call.toolCallId,
               toolName: call.toolName,
-              args: call.args,
-            })),
-          });
+              args: normalizeToolArguments(call.toolName, (call.args ?? {}) as Record<string, unknown>),
+            });
+          }
+          messages.push({ role: 'assistant', content: contentParts });
 
           const results: ToolResultPart[] = [];
           for (const call of toolCalls) {
-            const args = call.args as Record<string, unknown>;
-            onEvent?.({
-              type: 'tool',
-              name: definition.name,
-              tool: call.toolName,
-              detail: toolDetail(call.toolName, args),
-            });
-
-            const toolFn = tools[call.toolName as keyof typeof tools];
-            let output: string;
-            if (!toolFn) {
-              output = `Tool "${call.toolName}" is not available to this subagent.`;
-            } else {
-              try {
-                const value = await (toolFn as any).execute(args, { abortSignal });
-                output = typeof value === 'string' ? value : JSON.stringify(value);
-              } catch (err) {
-                output = `Tool error: ${err instanceof Error ? err.message : String(err)}`;
-              }
-            }
-
+            const output = await executeTool(
+              call.toolName,
+              (call.args ?? {}) as Record<string, unknown>
+            );
             results.push({
               type: 'tool-result',
               toolCallId: call.toolCallId,
@@ -323,14 +345,30 @@ ${options.parentSystemPrompt}`;
           continue;
         }
 
+        // Hybrid fallback: model emitted XML/JSON tool calls in text despite native tools
+        if (hasToolCalls(fullText)) {
+          const parsed = parseToolCalls(fullText);
+          if (parsed.length > 0) {
+            messages.push({ role: 'assistant', content: fullText });
+            const outputs: string[] = [];
+            for (const call of parsed) {
+              const output = await executeTool(call.name, call.arguments);
+              outputs.push(`Tool result for "${call.name}":\n${output}`);
+            }
+            messages.push({ role: 'user', content: outputs.join('\n\n') });
+            continue;
+          }
+        }
+
         lastText = fullText;
         break;
       }
 
-      // XML fallback for models without native tool calling.
+      // XML/JSON fallback path
+      const xmlSystem = `${baseSystemPrompt}\n\n${buildXmlToolInstructions(toolNames)}`;
       const result = streamText({
         model: options.model,
-        system: `${systemPrompt}\n\n${XML_TOOL_INSTRUCTIONS_FOR_SUBAGENTS(toolNames)}`,
+        system: xmlSystem,
         messages,
         abortSignal,
       });
@@ -338,34 +376,21 @@ ${options.parentSystemPrompt}`;
       let fullText = '';
       for await (const chunk of result.textStream) {
         fullText += chunk;
-        onEvent?.({ type: 'text', name: definition.name, chunk });
+        onEvent?.({ type: 'text', runId, name: definition.name, chunk });
       }
 
       if (hasToolCalls(fullText)) {
-        messages.push({ role: 'assistant', content: fullText });
-        for (const call of parseToolCalls(fullText)) {
-          onEvent?.({
-            type: 'tool',
-            name: definition.name,
-            tool: call.name,
-            detail: toolDetail(call.name, call.arguments),
-          });
-
-          const toolFn = tools[call.name as keyof typeof tools];
-          let output: string;
-          if (!toolFn) {
-            output = `Tool "${call.name}" is not available to this subagent.`;
-          } else {
-            try {
-              const value = await (toolFn as any).execute(call.arguments, { abortSignal });
-              output = typeof value === 'string' ? value : JSON.stringify(value);
-            } catch (err) {
-              output = `Tool error: ${err instanceof Error ? err.message : String(err)}`;
-            }
+        const parsed = parseToolCalls(fullText);
+        if (parsed.length > 0) {
+          messages.push({ role: 'assistant', content: fullText });
+          const outputs: string[] = [];
+          for (const call of parsed) {
+            const output = await executeTool(call.name, call.arguments);
+            outputs.push(`Tool result for "${call.name}":\n${output}`);
           }
-          messages.push({ role: 'user', content: `Tool result for "${call.name}":\n${output}` });
+          messages.push({ role: 'user', content: outputs.join('\n\n') });
+          continue;
         }
-        continue;
       }
 
       lastText = fullText;
@@ -377,27 +402,15 @@ ${options.parentSystemPrompt}`;
     }
 
     const summary = lastText.trim() || '(subagent returned no text)';
-    onEvent?.({ type: 'done', name: definition.name, summary });
+    onEvent?.({ type: 'done', runId, name: definition.name, summary });
     return summary;
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
-      onEvent?.({ type: 'error', name: definition.name, error: 'Aborted' });
+      onEvent?.({ type: 'error', runId, name: definition.name, error: 'Aborted' });
       return '[Subagent interrupted]';
     }
     const message = err instanceof Error ? err.message : String(err);
-    onEvent?.({ type: 'error', name: definition.name, error: message });
+    onEvent?.({ type: 'error', runId, name: definition.name, error: message });
     return `[Subagent error: ${message}]`;
   }
-}
-
-function XML_TOOL_INSTRUCTIONS_FOR_SUBAGENTS(toolNames: string[]): string {
-  return `## Tool Calling Format
-You do not have native tool calling. To call a tool, emit a JSON object wrapped
-in <tool_call> tags, exactly like this:
-
-<tool_call>{"name": "read_file", "arguments": {"path": "src/main.ts"}}</tool_call>
-
-Available tools: ${toolNames.join(', ')}.
-You may write an explanation before a tool call. Wait for the tool result before
-deciding what to do next.`;
 }

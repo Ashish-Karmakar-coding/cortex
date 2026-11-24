@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 
 export interface ProviderConfig {
@@ -8,11 +8,18 @@ export interface ProviderConfig {
   defaultModel?: string;
 }
 
+export interface PermissionConfig {
+  allow?: string[];
+  deny?: string[];
+}
+
 export interface Config {
   activeProvider: string;
   activeModel: string;
   numCtx: number;
+  storageDir?: string;
   providers: Record<string, ProviderConfig>;
+  permissions?: PermissionConfig;
 }
 
 const ENV_KEY_MAP: Record<string, string> = {
@@ -30,21 +37,48 @@ const ENV_HOST_MAP: Record<string, string> = {
 export function getConfigDir(): string {
   // CORTEX_HOME lets users (and the installer) relocate both config and data.
   const override = process.env['CORTEX_HOME'];
-  if (override) {
-    return override;
+  if (override && override.trim()) {
+    return resolve(override.trim());
   }
   return join(homedir(), '.cortex');
+}
+
+export function getStorageDir(config?: Config): string {
+  const envOverride = process.env['CORTEX_STORAGE_DIR'];
+  if (envOverride && envOverride.trim()) {
+    return resolve(envOverride.trim());
+  }
+  if (config?.storageDir && config.storageDir.trim()) {
+    return resolve(config.storageDir.trim());
+  }
+  // If config wasn't passed, read config.json silently if present so callers
+  // (like SessionStore) respect a configured custom storageDir.
+  if (!config) {
+    const configPath = getConfigPath();
+    if (existsSync(configPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(configPath, 'utf-8')) as Partial<Config>;
+        if (parsed.storageDir && parsed.storageDir.trim()) {
+          return resolve(parsed.storageDir.trim());
+        }
+      } catch {
+        // Fall back to default path
+      }
+    }
+  }
+  return join(getConfigDir(), 'storage');
 }
 
 function getConfigPath(): string {
   return join(getConfigDir(), 'config.json');
 }
 
-function createDefaultConfig(): Config {
+export function createDefaultConfig(customStorageDir?: string): Config {
   return {
     activeProvider: 'ollama',
-    activeModel: 'llama3.2',
+    activeModel: 'qwen2.5-coder:14b',
     numCtx: 16384,
+    storageDir: customStorageDir ? resolve(customStorageDir) : join(getConfigDir(), 'storage'),
     providers: {
       ollama: {
         baseUrl: 'http://localhost:11434',
@@ -58,27 +92,44 @@ function createDefaultConfig(): Config {
       groq: {},
       openrouter: {},
     },
+    permissions: {
+      allow: [],
+      deny: [],
+    },
   };
 }
 
 export function loadConfig(): Config {
   const configPath = getConfigPath();
+  const defaults = createDefaultConfig();
 
   let config: Config;
 
   if (existsSync(configPath)) {
     try {
       const raw = readFileSync(configPath, 'utf-8');
-      config = JSON.parse(raw) as Config;
+      const parsed = JSON.parse(raw) as Partial<Config>;
+      config = {
+        ...defaults,
+        ...parsed,
+        providers: {
+          ...defaults.providers,
+          ...(parsed.providers ?? {}),
+        },
+        permissions: {
+          allow: parsed.permissions?.allow ?? [],
+          deny: parsed.permissions?.deny ?? [],
+        },
+      };
     } catch {
-      config = createDefaultConfig();
+      config = defaults;
     }
   } else {
-    config = createDefaultConfig();
+    config = defaults;
     saveConfig(config);
   }
 
-  // Apply env var overrides
+  // Apply env var overrides (env vars always override saved keys/hosts).
   for (const [provider, envVar] of Object.entries(ENV_KEY_MAP)) {
     const envValue = process.env[envVar];
     if (envValue) {
@@ -97,6 +148,11 @@ export function loadConfig(): Config {
       }
       config.providers[provider]!.baseUrl = envValue;
     }
+  }
+
+  const storageOverride = process.env['CORTEX_STORAGE_DIR'];
+  if (storageOverride && storageOverride.trim()) {
+    config.storageDir = resolve(storageOverride.trim());
   }
 
   return config;
@@ -118,21 +174,13 @@ export function saveConfig(config: Config): void {
 }
 
 export function getApiKey(provider: string): string | undefined {
-  const config = loadConfig();
-  const providerConfig = config.providers[provider];
-
-  // Check config first
-  if (providerConfig?.apiKey) {
-    return providerConfig.apiKey;
-  }
-
-  // Then check env vars
   const envVar = ENV_KEY_MAP[provider];
-  if (envVar) {
+  if (envVar && process.env[envVar]) {
     return process.env[envVar];
   }
 
-  return undefined;
+  const config = loadConfig();
+  return config.providers[provider]?.apiKey;
 }
 
 export function setApiKey(provider: string, apiKey: string): void {
